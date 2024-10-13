@@ -1,0 +1,9 @@
+project:
+  output-dir: _docs
+
+website:
+  title: "w40k-damage"
+  site-url: "https://velochy.github.io/w40k-damage"
+  description: "A unit-to-unit damage calculator"
+  repo-branch: main
+  repo-url: "https://github.com/velochy/w40k-damage"
