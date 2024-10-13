@@ -2,8 +2,8 @@
 
 # %% auto 0
 __all__ = ['convolve', 'mult_ddist_vals', 'mult_ddist_probs', 'threshold_ddist', 'add_ddist', 'flatdist', 'fnp_transform',
-           'dd_prune', 'dd_mean', 'dd_max', 'dd_psum', 'find_kw', 'single_dam_dist', 'atk_success_prob',
-           'atk_success_dist', 'successful_atk_dist', 'dam_dist']
+           'dd_rep', 'dd_prune', 'dd_mean', 'dd_above', 'dd_max', 'dd_psum', 'find_kw', 'single_dam_dist',
+           'atk_success_prob', 'atk_success_dist', 'successful_atk_dist', 'dam_dist']
 
 # %% ../nbs/01_dists.ipynb 1
 import numpy, re
@@ -23,9 +23,11 @@ def convolve(d1,d2, n_wounds=None):
     else: # Limit damage to n_wounds units
         for k1,v1 in d1.items():
             for k2,v2 in d2.items():
+                kv = k1+k2
                 k1m, k2m = k1%n_wounds, k2%n_wounds
-                if k1m + k2m > n_wounds: res[k1+k2-(k1m+k2m)%n_wounds] += v1*v2
-                else: res[k1+k2] += v1*v2
+                if k1m + k2m > n_wounds: 
+                    kv -= (k1m+k2m)%n_wounds
+                res[kv] += v1*v2
     return res
 
 def mult_ddist_vals(d, val):
@@ -63,6 +65,13 @@ def fnp_transform(d, q):
             res[i] += v*comb(k,i)*(p**i)*(q**(k-i))
     return res
 
+def dd_rep(d, n, **argv):
+    if n == 0 : return { 0: 1 }
+    res_d = d
+    for _ in range(1,n):
+        res_d = dd_prune(convolve(res_d,d,**argv),1e-3)
+    return res_d
+
 # Prune all values with prob below ratio * <max prob>
 def dd_prune(d, ratio):
     t = ratio*max(d.values())
@@ -73,6 +82,14 @@ def dd_mean(dd):
     for k, v in dd.items():
         val += k*v
     return val
+
+
+def dd_above(d, thresh):
+    p = 0.0
+    for k,v in d.items():
+        if k>=thresh: p+=v
+    return p
+
 
 def dd_max(dd):
     return max(dd.keys())
@@ -243,6 +260,16 @@ def atk_success_prob(wep, target, crit_hit=None, cover=False, verbose=False):
     return p_dam
 
 # %% ../nbs/01_dists.ipynb 9
+# Create res as weighted sum of repeated convolutions with weights given by b_dd and repeated self-convolutons of r_dd
+def dd_over_dd(b_dd,r_dd,base=0,**argv):
+    cur_d,res_d = {base: 1.0}, {0: b_dd.get(0,0.0)}
+    for i in range(1,dd_max(b_dd)+1):
+        cur_d = convolve(cur_d,r_dd,**argv)
+        if i in b_dd:
+            res_d = add_ddist(res_d,mult_ddist_probs(cur_d,b_dd[i]))
+    return res_d
+
+# %% ../nbs/01_dists.ipynb 10
 # Wrapper around atk_success_prob that handles sustained hits
 def atk_success_dist(wep,target,cover=False):
    
@@ -256,21 +283,17 @@ def atk_success_dist(wep,target,cover=False):
     
     # Sustained hits:
     #print("Sustained",sus)
-    sus = int(sus) if sus else 0
+    sus_d = dd_from_str(sus)
     
     p_hit, p_hcrit = get_hit_probs(wep,target)
     pc = atk_success_prob(wep,target,True,cover=cover)
     pn = atk_success_prob(wep,target,False,cover=cover)
 
-    p = pn*(1-p_hcrit)
-    dd = { 1: pc, 0: {1-p} }
-
+    #p = pn*(1-p_hcrit)
     normal = { 1: pn, 0: (1-pn) }
-
     crit = { 1: pc, 0: (1-pc) }
-    for _ in range(sus):
-        crit = convolve(crit,normal)
-
+    crit = convolve(crit,dd_over_dd(sus_d,normal))
+    
     normal = mult_ddist_probs(normal,p_hit-p_hcrit)
     crit = mult_ddist_probs(crit,p_hcrit)
 
@@ -279,16 +302,6 @@ def atk_success_dist(wep,target,cover=False):
 
     return total
 
-
-# %% ../nbs/01_dists.ipynb 10
-# Create res as weighted sum of repeated convolutions with weights given by b_dd and repeated self-convolutons of r_dd
-def dd_over_dd(b_dd,r_dd,**argv):
-    cur_d,res_d = {0: 1}, {0: b_dd.get(0,0.0)}
-    for i in range(1,dd_max(b_dd)+1):
-        cur_d = convolve(cur_d,r_dd,**argv)
-        if i in b_dd:
-            res_d = add_ddist(res_d,mult_ddist_probs(cur_d,b_dd[i]))
-    return res_d
 
 # %% ../nbs/01_dists.ipynb 11
 def successful_atk_dist(wep,target, range=False, cover=False):
@@ -334,8 +347,5 @@ def dam_dist(wep,target, n=1, range=False, cover=False):
     # Create res as weighted sum of repeated convolutions
     unit_d = dd_over_dd(sa_d,sd_d,n_wounds=target['wounds'])
 
-    res_d = dd_prune(unit_d,1e-3)
-    for _ in prange(1,n):
-        res_d = dd_prune(convolve(res_d,unit_d),1e-3)
-
+    res_d = dd_rep(unit_d,n)
     return res_d
