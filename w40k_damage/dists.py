@@ -129,21 +129,20 @@ def single_dam_dist(wep, target, range=False):
     # Create dmgstr distribution
     dd = dd_from_str(wep['damage'])
 
-    # Apply div/mult modifiers 
-    div,mult,add = 1,1,0 #TODO: process advanced abilities
-    if div!=1: dd = mult_ddist_vals(dd,1.0/div)
-    if mult!=1: dd = mult_ddist_probs(dd,mult)
+    # Apply div/mult modifiers - ǸB order matters  
+    if 'halve damage' in target['abilities']: dd = mult_ddist_vals(dd,1.0/2)
+    if 'double damage' in wep['kws']: dd = mult_ddist_probs(dd,2)
+
+    # Threshold to 1
+    dr = find_kw('damage reduction', target['abilities'])
+    if dr: dd = convolve(dd,{-int(dr):1.0})
+    threshold_ddist(dd,1,True)
 
     # Melta - after div and mult
     melta = find_kw('melta',wep['kws'])
     if melta and range: 
         #print("MELTA",melta)
         dd = convolve(dd,dd_from_str(melta))
-
-    if add!=0: dd = convolve(dd,{add:1.0})
-
-    # Threshold to 1
-    threshold_ddist(dd,1,True)
 
     # Apply FNP
     fnp = find_kw('feel no pain',target['abilities'])
@@ -167,7 +166,9 @@ def get_hit_probs(wep,target):
     if 'torrent' in wep['kws']:
         p_hcrit, p_hit = 0, 1
     else:
-        hit_crit = 6 # Normally crit on 6+ but can be something else
+        hc = find_kw('hit crit',wep['kws'])
+        hit_crit = int(hc.strip('+')) if hc else 6
+        
         p_hcrit = (7-hit_crit)/6.0
 
         hit_t = wep['bsws']
@@ -176,9 +177,26 @@ def get_hit_probs(wep,target):
         if wep['type']=='ranged' and 'stealth' in target['abilities']: 
             #print("stealth")
             hit_t +=1
+        ih = find_kw('improved hits',wep['kws'])
+        if ih: hit_t -= int(ih)
 
         p_hit = max((6*p_hcrit),min(5, # hit_crit always hits, 1 always misses
                     (7-hit_t)))/6.0
+        
+        if 'overwatch' in wep['kws'] and wep['type']=='ranged': # Only on an unmodified roll of 6
+            p_hit = p_hcrit = 1/6.0
+        elif 'indirect' in wep['kws'] and 'indirect fire' in wep['kws']: # Only on an unmodified roll of 3
+            p_hit = min(p_hit,0.5)
+            p_hcrit = min(p_hcrit,0.5)
+        
+        if 'reroll hits' in wep['kws']:
+            p_hit += (1-p_hit)*p_hit
+            p_hcrit += (1-p_hit)*p_hcrit
+        elif 'reroll 1s to hit' in wep['kws']:
+            p_hit += (1/6.0)*p_hit
+            p_hcrit += (1/6.0)*p_hcrit
+            
+
     return p_hit,p_hcrit
 
 # %% ../nbs/01_dists.ipynb 8
@@ -202,33 +220,42 @@ def atk_success_prob(wep, target, crit_hit=None, cover=False, verbose=False):
     # Prob to wound
 
     # Get crit wound threshold (ANTI keywords)
-    wound_crit = 6
+    wc = find_kw('wound crit',wep['kws'])
+    wound_crit = int(wc.strip('+')) if wc else 6
+    
     for k in wep['kws']:
         if k.startswith('anti-'):
             kw,val = k[5:].split(' ')
             if kw in target['kws']: 
                 #print("Anti",kw,val)
-                wound_crit = min(wound_crit,int(val.strip('+')))
+                wound_crit = min(wound_crit,int(val.strip('+')))    
 
     p_wcrit = (7-wound_crit)/6.0
 
     if wep['strength']>target['toughness']:
         if wep['strength']>=2*target['toughness']:
-            p_wound = 5/6.0
-        else: p_wound = 4/6.0
+            p_wound = 5
+        else: p_wound = 4
     elif wep['strength']<target['toughness']:
         if 2*wep['strength']<=target['toughness']:
-            p_wound = 1/6.0
-        else: p_wound = 2/6.0
-    else: p_wound = 3/6.0
+            p_wound = 1
+        else: p_wound = 2
+    else: p_wound = 3
 
-    p_wound = max(p_wcrit,p_wound)
+    iw = find_kw('improved wounds',wep['kws'])
+    if iw: p_wound += int(iw)
+    p_wound /= 6
 
-    if 'twin-linked' in wep['kws']:
+    p_wound = min(5/6,max(p_wcrit,p_wound))
+
+    if 'twin-linked' in wep['kws'] or 'reroll wounds' in wep['kws']:
         #print("Twinlinked")
         p_wound += (1-p_wound)*p_wound
         p_wcrit += (1-p_wound)*p_wcrit
-    
+    elif 'reroll 1s to wound'  in wep['kws']:
+        p_wound += (1/6.0)*p_wound
+        p_wcrit += (1/6.0)*p_wcrit
+
     if verbose: print("Wound",p_wound,p_wcrit)
 
     # Prob to not save
@@ -237,7 +264,9 @@ def atk_success_prob(wep, target, crit_hit=None, cover=False, verbose=False):
     c_eff = 0 if (not cover or wep['type']!='ranged' or 
                 'ignores cover' in wep['kws'] or 
                 (wep['AP']==0 and target['save']<=3)) else 1
-    
+
+    iap = find_kw('improved ap',wep['kws'])
+    if iap: c_eff += int(iap)
     
     save = min(target['invuln'] or 10,target['save']-c_eff-wep['AP'])
     p_nsave = 1.0 - max(0,min(6,7-save))/6.0
@@ -271,7 +300,7 @@ def dd_over_dd(b_dd,r_dd,base=0,**argv):
 
 # %% ../nbs/01_dists.ipynb 10
 # Wrapper around atk_success_prob that handles sustained hits
-def atk_success_dist(wep,target,cover=False):
+def atk_success_dist(wep,target,cover=False,overwatch=False):
    
     # Find number of sustained hits
     sus = find_kw('sustained hits',wep['kws'])
