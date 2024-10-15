@@ -3,7 +3,7 @@
 # %% auto 0
 __all__ = ['convolve', 'mult_ddist_vals', 'mult_ddist_probs', 'threshold_ddist', 'add_ddist', 'flatdist', 'fnp_transform',
            'dd_rep', 'dd_prune', 'dd_mean', 'dd_above', 'dd_max', 'dd_psum', 'find_kw', 'single_dam_dist',
-           'atk_success_prob', 'atk_success_dist', 'successful_atk_dist', 'dam_dist']
+           'atk_success_prob', 'atk_success_dist', 'successful_atk_dist', 'dam_dist', 'fulldist_convolve']
 
 # %% ../nbs/01_dists.ipynb 1
 import numpy, re
@@ -12,9 +12,12 @@ from math import ceil, floor, comb, isnan
 prange = range # as we use range as argument name so it helps to have alias
 
 # %% ../nbs/01_dists.ipynb 3
-# Helper functions for damage distributions
-
-def convolve(d1,d2, n_wounds=None):
+# Convolution of d1 and d2.
+# If n_wounds is given, respect the n_wounds boundaries of units
+# If first_n is given, assume first unit has only first_n wounds
+# NB! n_wounds makes convolution non-associative, and first_n non-commutative,
+#     which makes things a lot more complex to reason about
+def convolve(d1,d2, n_wounds=None, first_n=0):
     res = defaultdict(lambda: 0)
     if n_wounds is None:
         for k1,v1 in d1.items():
@@ -24,11 +27,24 @@ def convolve(d1,d2, n_wounds=None):
         for k1,v1 in d1.items():
             for k2,v2 in d2.items():
                 kv = k1+k2
-                k1m, k2m = k1%n_wounds, k2%n_wounds
-                if k1m + k2m > n_wounds: 
-                    kv -= (k1m+k2m)%n_wounds
+                if first_n: # Handle first threshold separate
+                    if k1<first_n:
+                        mod = k1+k2+1 # i.e. ignore mod part
+                        kv = min(k1+k2,first_n) # just set the kv
+                    else: # Past first threshold, so business as usual
+                        k1,mod = k1-first_n,n_wounds
+                else: mod = n_wounds
+                
+                k1m, k2m = k1%mod, k2%mod
+                if k1m + k2m > mod: 
+                    kv -= (k1m+k2m)%mod
                 res[kv] += v1*v2
     return res
+
+
+# %% ../nbs/01_dists.ipynb 4
+# Other helper functions for distributions
+# TODO: this is better encapsulated into a class
 
 def mult_ddist_vals(d, val):
     res = defaultdict(lambda: 0)
@@ -98,7 +114,7 @@ def dd_psum(dd):
     return sum(dd.values())
 
 
-# %% ../nbs/01_dists.ipynb 4
+# %% ../nbs/01_dists.ipynb 5
 def dd_from_str(dstr):
     dd = { 0: 1.0 }
     for t in dstr.lower().split('+'):
@@ -114,7 +130,7 @@ def dd_from_str(dstr):
             dd = convolve(dd,{d:1.0})
     return dd
 
-# %% ../nbs/01_dists.ipynb 5
+# %% ../nbs/01_dists.ipynb 6
 # Return suffix of the kw if found, and None otherwise
 def find_kw(kw,kws):
     sus = None
@@ -123,7 +139,7 @@ def find_kw(kw,kws):
             sus = k[len(kw):].strip()
     return sus
 
-# %% ../nbs/01_dists.ipynb 6
+# %% ../nbs/01_dists.ipynb 7
 def single_dam_dist(wep, target, range=False):
 
     # Create dmgstr distribution
@@ -159,7 +175,7 @@ def single_dam_dist(wep, target, range=False):
     return dd
     
 
-# %% ../nbs/01_dists.ipynb 7
+# %% ../nbs/01_dists.ipynb 8
 def get_hit_probs(wep,target):
 
     # Prob to hit
@@ -199,7 +215,7 @@ def get_hit_probs(wep,target):
 
     return p_hit,p_hcrit
 
-# %% ../nbs/01_dists.ipynb 8
+# %% ../nbs/01_dists.ipynb 9
 def atk_success_prob(wep, target, crit_hit=None, cover=False, verbose=False):
 
     # TODO:
@@ -288,7 +304,7 @@ def atk_success_prob(wep, target, crit_hit=None, cover=False, verbose=False):
 
     return p_dam
 
-# %% ../nbs/01_dists.ipynb 9
+# %% ../nbs/01_dists.ipynb 10
 # Create res as weighted sum of repeated convolutions with weights given by b_dd and repeated self-convolutons of r_dd
 def dd_over_dd(b_dd,r_dd,base=0,**argv):
     cur_d,res_d = {base: 1.0}, {0: b_dd.get(0,0.0)}
@@ -298,7 +314,7 @@ def dd_over_dd(b_dd,r_dd,base=0,**argv):
             res_d = add_ddist(res_d,mult_ddist_probs(cur_d,b_dd[i]))
     return res_d
 
-# %% ../nbs/01_dists.ipynb 10
+# %% ../nbs/01_dists.ipynb 11
 # Wrapper around atk_success_prob that handles sustained hits
 def atk_success_dist(wep,target,cover=False,overwatch=False):
    
@@ -332,7 +348,7 @@ def atk_success_dist(wep,target,cover=False,overwatch=False):
     return total
 
 
-# %% ../nbs/01_dists.ipynb 11
+# %% ../nbs/01_dists.ipynb 12
 def successful_atk_dist(wep,target, range=False, cover=False):
     if range not in [True,False]: range = (range<=wep['range']/2)
 
@@ -361,10 +377,10 @@ def successful_atk_dist(wep,target, range=False, cover=False):
 
     return res_d
 
-# %% ../nbs/01_dists.ipynb 12
+# %% ../nbs/01_dists.ipynb 13
 # Final end-to-end calculation for a weapon
 # Range can be True (is in half distance), False (is not) or number of inches
-def dam_dist(wep,target, n=1, range=False, cover=False):
+def dam_dist(wep,target, n=1, range=False, cover=False, fulldist=False):
     if range not in [True,False]: range = (range<=wep['range']/2)
 
     # Successful attack dist
@@ -374,7 +390,27 @@ def dam_dist(wep,target, n=1, range=False, cover=False):
     sd_d = single_dam_dist(wep,target,range=range)
 
     # Create res as weighted sum of repeated convolutions
-    unit_d = dd_over_dd(sa_d,sd_d,n_wounds=target['wounds'])
+    sar_d = dd_rep(sa_d,n)
 
-    res_d = dd_rep(unit_d,n)
+    if not fulldist: # Return regular dist    
+        res_d = dd_over_dd(sar_d,sd_d,n_wounds=target['wounds'])
+    else: # Return a list of dists, one with first_n for each of 0 ... target['wounds']-1 values
+        res_d = [ dd_over_dd(sar_d,sd_d,n_wounds=target['wounds'],first_n=n_f) for n_f in prange(target['wounds'],0,-1) ]
+            
     return res_d
+
+# %% ../nbs/01_dists.ipynb 15
+# Convolution of 'full' distributions i.e. when we have one for each mod n_wounds value
+def fulldist_convolve(fd1,fd2,n_wounds):
+    fres = []
+    for f_n,d1 in enumerate(fd1):
+        res = defaultdict(lambda: 0)
+        for k1, v1 in d1.items():
+            d2 = fd2[(k1+f_n)%n_wounds]
+            for k2,v2 in d2.items():
+                kv = k1+k2
+                res[kv] += v1*v2
+        fres.append(res)
+
+    return fres
+
