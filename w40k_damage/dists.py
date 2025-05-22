@@ -2,7 +2,7 @@
 
 # %% auto 0
 __all__ = ['convolve', 'mult_ddist_vals', 'mult_ddist_probs', 'threshold_ddist', 'add_ddist', 'flatdist', 'fnp_transform',
-           'dd_rep', 'dd_prune', 'dd_mean', 'dd_above', 'dd_max', 'dd_psum', 'find_kw', 'single_dam_dist',
+           'dd_prune', 'dd_rep', 'dd_mean', 'dd_above', 'dd_max', 'dd_psum', 'dd_cap', 'find_kw', 'single_dam_dist',
            'atk_success_prob', 'atk_success_dist', 'successful_atk_dist', 'dam_dist', 'fulldist_convolve']
 
 # %% ../nbs/01_dists.ipynb 1
@@ -12,33 +12,13 @@ from math import ceil, floor, comb, isnan
 prange = range # as we use range as argument name so it helps to have alias
 
 # %% ../nbs/01_dists.ipynb 3
-# Convolution of d1 and d2.
-# If n_wounds is given, respect the n_wounds boundaries of units
-# If first_n is given, assume first unit has only first_n wounds
-# NB! n_wounds makes convolution non-associative, and first_n non-commutative,
-#     which makes things a lot more complex to reason about
-def convolve(d1,d2, n_wounds=None, first_n=0):
+# Convolution of d1 and d2
+# NB! For damage, use dam_convolve
+def convolve(d1,d2):
     res = defaultdict(lambda: 0)
-    if n_wounds is None:
-        for k1,v1 in d1.items():
-            for k2,v2 in d2.items():
-                res[k1+k2] += v1*v2
-    else: # Limit damage to n_wounds units
-        for k1,v1 in d1.items():
-            for k2,v2 in d2.items():
-                kv = k1+k2
-                if first_n: # Handle first threshold separate
-                    if k1<first_n:
-                        mod = k1+k2+1 # i.e. ignore mod part
-                        kv = min(k1+k2,first_n) # just set the kv
-                    else: # Past first threshold, so business as usual
-                        k1,mod = k1-first_n,n_wounds
-                else: mod = n_wounds
-                
-                k1m, k2m = k1%mod, k2%mod
-                if k1m + k2m > mod: 
-                    kv -= (k1m+k2m)%mod
-                res[kv] += v1*v2
+    for k1,v1 in d1.items():
+        for k2,v2 in d2.items():
+            res[k1+k2] += v1*v2    
     return res
 
 
@@ -81,17 +61,19 @@ def fnp_transform(d, q):
             res[i] += v*comb(k,i)*(p**i)*(q**(k-i))
     return res
 
-def dd_rep(d, n, **argv):
-    if n == 0 : return { 0: 1 }
-    res_d = d
-    for _ in range(1,n):
-        res_d = dd_prune(convolve(res_d,d,**argv),1e-3)
-    return res_d
-
 # Prune all values with prob below ratio * <max prob>
 def dd_prune(d, ratio):
     t = ratio*max(d.values())
     return { k:v for k,v in d.items() if v>t }
+
+
+# Repeat dist d n times
+def dd_rep(d, n):
+    if n == 0 : return { 0: 1 }
+    res_d = d
+    for _ in range(1,n):
+        res_d = dd_prune(convolve(res_d,d),1e-3)
+    return res_d
 
 def dd_mean(dd):
     val = 0.0
@@ -112,6 +94,12 @@ def dd_max(dd):
 
 def dd_psum(dd):
     return sum(dd.values())
+
+# Cap the value at maxv
+def dd_cap(d, maxv):
+    res = { v: p for v, p in d.items() if v<maxv }
+    res[maxv] = dd_above(d,maxv)
+    return res
 
 
 # %% ../nbs/01_dists.ipynb 5
@@ -306,10 +294,10 @@ def atk_success_prob(wep, target, crit_hit=None, cover=False, verbose=False):
 
 # %% ../nbs/01_dists.ipynb 10
 # Create res as weighted sum of repeated convolutions with weights given by b_dd and repeated self-convolutons of r_dd
-def dd_over_dd(b_dd,r_dd,base=0,**argv):
+def dd_over_dd(b_dd,r_dd,base=0):
     cur_d,res_d = {base: 1.0}, {0: b_dd.get(0,0.0)}
     for i in range(1,dd_max(b_dd)+1):
-        cur_d = convolve(cur_d,r_dd,**argv)
+        cur_d = convolve(cur_d,r_dd)
         if i in b_dd:
             res_d = add_ddist(res_d,mult_ddist_probs(cur_d,b_dd[i]))
     return res_d
@@ -378,28 +366,76 @@ def successful_atk_dist(wep,target, range=False, cover=False):
     return res_d
 
 # %% ../nbs/01_dists.ipynb 13
+# Damage requires its own convolutions that account for n_wounds and first_n
+# This is faster than fulldist_convolve, under the specific circumstances it is used
+# It only works under those very specific circumstances, unfortunately
+
+# Convolve the damage dist of a single shot ds into aggregate da
+# This assumes ds is capped at n_wounds max.
+# Note that the order of operations on this really matters because
+# capping n_wounds makes the convolution non-associative, and first_n non-commutative
+def dam_convolve(da,ds,n_wounds,first_n=0):
+    assert max(ds.keys())<=n_wounds
+    res = defaultdict(lambda: 0)
+    for k1,v1 in da.items():
+        for k2,v2 in ds.items():
+            kv = k1+k2
+            mod,k1f = n_wounds, k1
+            if first_n: # Handle first threshold separate
+                if k1<first_n:
+                    mod = 0 # i.e. ignore mod part in overflow code below
+                    kv = min(k1+k2,first_n) # just set the kv
+                else: # Past first threshold, so business as usual
+                    k1f = k1-first_n # Reduce k1 by first_n for mod purposes
+            
+            # Remove overflow from overkilling unit
+            if mod and k1f%mod + k2 > mod: 
+                kv -= (k1f+k2)%mod
+            
+            #print("  ",k1,k2,mod,kv)
+
+            res[kv] += v1*v2
+    return res
+
+
+
+# Create res as weighted sum of repeated convolutions with weights given by b_dd and repeated self-convolutons of r_dd
+def dam_dd_over_dd(b_dd,r_dd,base=0,**argv):
+    cur_d,res_d = {base: 1.0}, {0: b_dd.get(0,0.0)}
+    for i in range(1,dd_max(b_dd)+1):
+        cur_d = dam_convolve(cur_d,r_dd,**argv)
+        if i in b_dd:
+            res_d = add_ddist(res_d,mult_ddist_probs(cur_d,b_dd[i]))
+    return res_d
+
+# %% ../nbs/01_dists.ipynb 14
 # Final end-to-end calculation for a weapon
 # Range can be True (is in half distance), False (is not) or number of inches
-def dam_dist(wep,target, n=1, range=False, cover=False, fulldist=False):
+def dam_dist(wep,target, n=1, range=False, cover=False, fulldist=False, spillover=False):
     if range not in [True,False]: range = (range<=wep['range']/2)
 
     # Successful attack dist
     sa_d = successful_atk_dist(wep,target, range, cover)
 
+    # Repeat succ. attack dist n times
+    sar_d = dd_rep(sa_d,n)
+
     # Single damage dist
     sd_d = single_dam_dist(wep,target,range=range)
 
-    # Create res as weighted sum of repeated convolutions
-    sar_d = dd_rep(sa_d,n)
-
+    # Find unit wounds
+    unit_wounds = target['wounds']*target.get('models',1)
+    
     if not fulldist: # Return regular dist    
-        res_d = dd_over_dd(sar_d,sd_d,n_wounds=target['wounds'])
+        res_d = dam_dd_over_dd(sar_d,sd_d,n_wounds=target['wounds'])
+        if not spillover: res_d = dd_cap(res_d,unit_wounds) 
     else: # Return a list of dists, one with first_n for each of 0 ... target['wounds']-1 values
-        res_d = [ dd_over_dd(sar_d,sd_d,n_wounds=target['wounds'],first_n=n_f) for n_f in prange(target['wounds'],0,-1) ]
+        res_d = [ dam_dd_over_dd(sar_d,sd_d,n_wounds=target['wounds'],first_n=n_f) for n_f in prange(target['wounds'],0,-1) ]
+        if not spillover: res_d = [ dd_cap(d,unit_wounds-i) for i,d in enumerate(res_d) ]
             
     return res_d
 
-# %% ../nbs/01_dists.ipynb 15
+# %% ../nbs/01_dists.ipynb 16
 # Convolution of 'full' distributions i.e. when we have one for each mod n_wounds value
 def fulldist_convolve(fd1,fd2,n_wounds):
     fres = []
