@@ -3,14 +3,13 @@
 # %% auto 0
 __all__ = ['convolve', 'mult_ddist_vals', 'mult_ddist_probs', 'threshold_ddist', 'add_ddist', 'flatdist', 'fnp_transform',
            'dd_prune', 'dd_rep', 'dd_mean', 'dd_quantile', 'dd_above', 'dd_max', 'dd_psum', 'dd_cap', 'find_kw',
-           'single_dam_dist', 'atk_success_prob', 'atk_success_dist', 'successful_atk_dist', 'dam_dist',
+           'agg_mod_kw', 'single_dam_dist', 'atk_success_prob', 'atk_success_dist', 'successful_atk_dist', 'dam_dist',
            'fulldist_convolve']
 
 # %% ../nbs/01_dists.ipynb 1
 import numpy, re
 from collections import defaultdict
 from math import ceil, floor, comb, isnan
-prange = range # as we use range as argument name so it helps to have alias
 
 # %% ../nbs/01_dists.ipynb 3
 # Convolution of d1 and d2
@@ -137,8 +136,16 @@ def find_kw(kw,kws):
             sus = k[len(kw):].strip()
     return sus
 
+# Aggregate over different effects  of the same type
+def agg_mod_kw(kw,kws):
+    eff = 0
+    for k in kws:
+        if k.startswith(kw):
+            eff += int(k[len(kw):].strip())
+    return eff
+
 # %% ../nbs/01_dists.ipynb 7
-def single_dam_dist(wep, target, range=False):
+def single_dam_dist(wep, target, situation={}):
 
     # Create dmgstr distribution
     dd = dd_from_str(wep['damage'])
@@ -154,7 +161,7 @@ def single_dam_dist(wep, target, range=False):
 
     # Melta - after div and mult
     melta = find_kw('melta',wep['kws'])
-    if melta and range: 
+    if melta and situation.get('range',False): 
         #print("MELTA",melta)
         dd = convolve(dd,dd_from_str(melta))
 
@@ -174,7 +181,7 @@ def single_dam_dist(wep, target, range=False):
     
 
 # %% ../nbs/01_dists.ipynb 8
-def get_hit_probs(wep,target):
+def get_hit_probs(wep,target,situation={}):
 
     # Prob to hit
     if 'torrent' in wep['kws']:
@@ -188,18 +195,17 @@ def get_hit_probs(wep,target):
         hit_t = wep['bsws']
 
         # Stealth
-        if wep['type']=='ranged' and 'stealth' in target['abilities']: 
-            #print("stealth")
-            hit_t +=1
-        ih = find_kw('improved hits',wep['kws'])
-        if ih: hit_t -= int(ih)
+        ih = agg_mod_kw('mod hits',wep['kws'])
+        if wep['type']=='ranged' and 'stealth' in target['abilities']: ih +=1
+        
+        hit_t -= max(-1,min(1,ih))
 
         p_hit = max((6*p_hcrit),min(5, # hit_crit always hits, 1 always misses
                     (7-hit_t)))/6.0
         
-        if 'overwatch' in wep['kws'] and wep['type']=='ranged': # Only on an unmodified roll of 6
+        if situation.get('overwatch') and wep['type']=='ranged': # Only on an unmodified roll of 6
             p_hit = p_hcrit = 1/6.0
-        elif 'indirect' in wep['kws'] and 'indirect fire' in wep['kws']: # Only on an unmodified roll of 3
+        elif situation.get('indirect') and 'indirect fire' in wep['kws']: # Only on an unmodified roll of 4+
             p_hit = min(p_hit,0.5)
             p_hcrit = min(p_hcrit,0.5)
         
@@ -214,7 +220,7 @@ def get_hit_probs(wep,target):
     return p_hit,p_hcrit
 
 # %% ../nbs/01_dists.ipynb 9
-def atk_success_prob(wep, target, crit_hit=None, cover=False, verbose=False):
+def atk_success_prob(wep, target, situation={}, crit_hit=None, verbose=False):
 
     # TODO:
     # Rerolls (1 and all)
@@ -227,7 +233,7 @@ def atk_success_prob(wep, target, crit_hit=None, cover=False, verbose=False):
     # This behavior is needed for Sustained hits as they also affect hit counts
     if crit_hit: p_hcrit,p_hit = 1,1
     elif crit_hit==False: p_hcrit,p_hit = 0, 1
-    else: p_hit, p_hcrit = get_hit_probs(wep, target)
+    else: p_hit, p_hcrit = get_hit_probs(wep, target, situation)
 
     if verbose: print("Hit",p_hit,p_hcrit)
 
@@ -246,18 +252,22 @@ def atk_success_prob(wep, target, crit_hit=None, cover=False, verbose=False):
 
     p_wcrit = (7-wound_crit)/6.0
 
-    if wep['strength']>target['toughness']:
-        if wep['strength']>=2*target['toughness']:
+    st, tgh = wep['strength'], target['toughness']
+    st += int(find_kw('mod strength',wep['kws']) or 0)
+    tgh += int(find_kw('mod toughness',target['abilities']) or 0)
+
+    if st>tgh:
+        if st>=2*tgh:
             p_wound = 5
         else: p_wound = 4
-    elif wep['strength']<target['toughness']:
-        if 2*wep['strength']<=target['toughness']:
+    elif st<tgh:
+        if 2*st<=tgh:
             p_wound = 1
         else: p_wound = 2
     else: p_wound = 3
 
-    iw = find_kw('improved wounds',wep['kws'])
-    if iw: p_wound += int(iw)
+    iw = agg_mod_kw('mod wounds',wep['kws'])
+    p_wound += max(-1,min(1,iw))
     p_wound /= 6
 
     p_wound = min(5/6,max(p_wcrit,p_wound))
@@ -273,16 +283,15 @@ def atk_success_prob(wep, target, crit_hit=None, cover=False, verbose=False):
     if verbose: print("Wound",p_wound,p_wcrit)
 
     # Prob to not save
-
-    # Cover effect
-    c_eff = 0 if (not cover or wep['type']!='ranged' or 
-                'ignores cover' in wep['kws'] or 
-                (wep['AP']==0 and target['save']<=3)) else 1
-
-    iap = find_kw('improved ap',wep['kws'])
-    if iap: c_eff += int(iap)
+    ap = wep['AP'] # NB! this is negative as in datasheets
+    ap += max(-1,min(1,agg_mod_kw('mod ap',wep['kws'])))
     
-    save = min(target['invuln'] or 10,target['save']-c_eff-wep['AP'])
+    # Cover effect - positive to neutralize the neg
+    c_eff = 0 if (not situation.get('cover') or wep['type']!='ranged' or 
+                'ignores cover' in wep['kws'] or 
+                (ap==0 and target['save']<=3)) else 1
+    
+    save = min(target['invuln'] or 10,target['save']-ap-c_eff)
     p_nsave = 1.0 - max(0,min(6,7-save))/6.0
 
     if 'devastating wounds' in wep['kws']: # Devastating wounds
@@ -314,23 +323,23 @@ def dd_over_dd(b_dd,r_dd,base=0):
 
 # %% ../nbs/01_dists.ipynb 11
 # Wrapper around atk_success_prob that handles sustained hits
-def atk_success_dist(wep,target,cover=False,overwatch=False):
-   
+def atk_success_dist(wep,target,situation={}):
+
     # Find number of sustained hits
     sus = find_kw('sustained hits',wep['kws'])
-   
+
     # Handle the easy case (no sustained hits)
     if not sus:
-        p = atk_success_prob(wep,target,cover=cover)
+        p = atk_success_prob(wep,target,situation)
         return { 1: p, 0: (1-p) }
     
     # Sustained hits:
     #print("Sustained",sus)
     sus_d = dd_from_str(sus)
     
-    p_hit, p_hcrit = get_hit_probs(wep,target)
-    pc = atk_success_prob(wep,target,True,cover=cover)
-    pn = atk_success_prob(wep,target,False,cover=cover)
+    p_hit, p_hcrit = get_hit_probs(wep,target,situation)
+    pc = atk_success_prob(wep,target,situation,True)
+    pn = atk_success_prob(wep,target,situation,False)
 
     #p = pn*(1-p_hcrit)
     normal = { 1: pn, 0: (1-pn) }
@@ -347,15 +356,16 @@ def atk_success_dist(wep,target,cover=False,overwatch=False):
 
 
 # %% ../nbs/01_dists.ipynb 12
-def successful_atk_dist(wep,target, range=False, cover=False):
-    if range not in [True,False]: range = (range<=wep['range']/2)
+def successful_atk_dist(wep,target, situation={}):
+    s_range = situation.get('range',False)
+    if s_range not in [True,False]: s_range = (s_range<=wep['range']/2)
 
     # Base attack number dist
     an_d = dd_from_str(wep['attacks'])
 
     # Rapid fire
     rfire = find_kw('rapid fire',wep['kws'])
-    if rfire and range: 
+    if rfire and s_range: 
         #print("Rapidfire",rfire)
         an_d = convolve(an_d,dd_from_str(rfire))
 
@@ -368,7 +378,7 @@ def successful_atk_dist(wep,target, range=False, cover=False):
         an_d = convolve(an_d,{added_attacks:1})
 
     # Attack successes dist for an individual attack
-    as_d = atk_success_dist(wep,target,cover)
+    as_d = atk_success_dist(wep,target,situation)
 
     # Create res as weighted sum of repeated convolutions
     res_d = dd_over_dd(an_d,as_d)
@@ -416,22 +426,25 @@ def dam_dd_over_dd(b_dd,r_dd,base=0,**argv):
         cur_d = dam_convolve(cur_d,r_dd,**argv)
         if i in b_dd:
             res_d = add_ddist(res_d,mult_ddist_probs(cur_d,b_dd[i]))
-    return res_d
+    return dict(res_d)
 
 # %% ../nbs/01_dists.ipynb 14
 # Final end-to-end calculation for a weapon
 # Range can be True (is in half distance), False (is not) or number of inches
-def dam_dist(wep,target, n=1, range=False, cover=False, fulldist=False, spillover=False):
-    if range not in [True,False]: range = (range<=wep['range']/2)
+def dam_dist(wep,target,situation={},n=1,fulldist=False,spillover=False):
+
+    # Situation modifiers
+    situation = {**{'range':False, 'cover':False, 'overwatch':False, 'indirect':False},**situation}
+    if situation['range'] not in [True,False]: situation['range'] = (situation['range']<=wep['range']/2)
 
     # Successful attack dist
-    sa_d = successful_atk_dist(wep,target, range, cover)
+    sa_d = successful_atk_dist(wep,target,situation)
 
     # Repeat succ. attack dist n times
     sar_d = dd_rep(sa_d,n)
 
     # Single damage dist
-    sd_d = single_dam_dist(wep,target,range=range)
+    sd_d = single_dam_dist(wep,target,situation)
 
     # Find unit wounds
     unit_wounds = target['wounds']*target.get('models',1)
@@ -440,7 +453,7 @@ def dam_dist(wep,target, n=1, range=False, cover=False, fulldist=False, spillove
         res_d = dam_dd_over_dd(sar_d,sd_d,n_wounds=target['wounds'])
         if not spillover: res_d = dd_cap(res_d,unit_wounds) 
     else: # Return a list of dists, one with first_n for each of 0 ... target['wounds']-1 values
-        res_d = [ dam_dd_over_dd(sar_d,sd_d,n_wounds=target['wounds'],first_n=n_f) for n_f in prange(target['wounds'],0,-1) ]
+        res_d = [ dam_dd_over_dd(sar_d,sd_d,n_wounds=target['wounds'],first_n=n_f) for n_f in range(target['wounds'],0,-1) ]
         if not spillover: res_d = [ dd_cap(d,unit_wounds-i) for i,d in enumerate(res_d) ]
             
     return res_d
