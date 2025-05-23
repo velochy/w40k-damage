@@ -2,8 +2,9 @@
 
 # %% auto 0
 __all__ = ['convolve', 'mult_ddist_vals', 'mult_ddist_probs', 'threshold_ddist', 'add_ddist', 'flatdist', 'fnp_transform',
-           'dd_prune', 'dd_rep', 'dd_mean', 'dd_above', 'dd_max', 'dd_psum', 'dd_cap', 'find_kw', 'single_dam_dist',
-           'atk_success_prob', 'atk_success_dist', 'successful_atk_dist', 'dam_dist', 'fulldist_convolve']
+           'dd_prune', 'dd_rep', 'dd_mean', 'dd_quantile', 'dd_above', 'dd_max', 'dd_psum', 'dd_cap', 'find_kw',
+           'single_dam_dist', 'atk_success_prob', 'atk_success_dist', 'successful_atk_dist', 'dam_dist',
+           'fulldist_convolve']
 
 # %% ../nbs/01_dists.ipynb 1
 import numpy, re
@@ -82,11 +83,20 @@ def dd_mean(dd):
     return val
 
 
+def dd_quantile(dd,q):
+    cum = 0.0
+    for k,v in sorted(dd.items()):
+        cum += v
+        if cum>=q: return k
+    return None
+
+# above-or-equal
 def dd_above(d, thresh):
     p = 0.0
     for k,v in d.items():
-        if k>=thresh: p+=v
-    return p
+        if k<thresh: p+=v
+    # This approach is better if we prune the dist
+    return 1.0-p
 
 
 def dd_max(dd):
