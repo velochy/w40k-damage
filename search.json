@@ -1,0 +1,62 @@
+[
+  {
+    "objectID": "index.html",
+    "href": "index.html",
+    "title": "w40k-damage",
+    "section": "",
+    "text": "This file will become your README and also the index of your documentation.",
+    "crumbs": [
+      "w40k-damage"
+    ]
+  },
+  {
+    "objectID": "index.html#developer-guide",
+    "href": "index.html#developer-guide",
+    "title": "w40k-damage",
+    "section": "Developer Guide",
+    "text": "Developer Guide\nIf you are new to using nbdev here are some useful pointers to get you started.\n\nInstall w40k_damage in Development mode\n# make sure w40k_damage package is installed in development mode\n$ pip install -e .\n\n# make changes under nbs/ directory\n# ...\n\n# compile to have changes apply to w40k_damage\n$ nbdev_prepare",
+    "crumbs": [
+      "w40k-damage"
+    ]
+  },
+  {
+    "objectID": "index.html#usage",
+    "href": "index.html#usage",
+    "title": "w40k-damage",
+    "section": "Usage",
+    "text": "Usage\n\nInstallation\nInstall latest from the GitHub repository:\n$ pip install git+https://github.com/velochy/w40k-damage.git\nor from conda\n$ conda install -c velochy w40k_damage\nor from pypi\n$ pip install w40k_damage\n\n\nDocumentation\nDocumentation can be found hosted on this GitHub repository’s pages. Additionally you can find package manager specific guidelines on conda and pypi respectively.",
+    "crumbs": [
+      "w40k-damage"
+    ]
+  },
+  {
+    "objectID": "index.html#how-to-use",
+    "href": "index.html#how-to-use",
+    "title": "w40k-damage",
+    "section": "How to use",
+    "text": "How to use\nFill me in please! Don’t forget code examples:\n\n1+1\n\n2",
+    "crumbs": [
+      "w40k-damage"
+    ]
+  },
+  {
+    "objectID": "01_dists.html",
+    "href": "01_dists.html",
+    "title": "w40k-damage",
+    "section": "",
+    "text": "# Two profiles for testing\nwep = { 'type':'ranged', 'attacks': '3', 'bsws': 3, 'strength': 5, 'AP': -2, 'damage': '2', 'kws': ['lethal hits', 'devastating wounds', 'sustained hits 2', 'anti-infantry 4+', 'rapid fire d2', 'melta d3+2'] }\ntarget = { 'toughness': 3, 'save': 2, 'invuln': 4, 'wounds': 3, 'kws':['infantry'], 'abilities': ['feel no pain 5+', 'stealth'] }\n\n\nsource\n\nconvolve\n\n convolve (d1, d2)\n\n\nsource\n\n\ndd_cap\n\n dd_cap (d, maxv)\n\n\nsource\n\n\ndd_psum\n\n dd_psum (dd)\n\n\nsource\n\n\ndd_max\n\n dd_max (dd)\n\n\nsource\n\n\ndd_above\n\n dd_above (d, thresh)\n\n\nsource\n\n\ndd_quantile\n\n dd_quantile (dd, q)\n\n\nsource\n\n\ndd_mean\n\n dd_mean (dd)\n\n\nsource\n\n\ndd_rep\n\n dd_rep (d, n)\n\n\nsource\n\n\ndd_prune\n\n dd_prune (d, ratio)\n\n\nsource\n\n\nfnp_transform\n\n fnp_transform (d, q)\n\n\nsource\n\n\nflatdist\n\n flatdist (n)\n\n\nsource\n\n\nadd_ddist\n\n add_ddist (d1, d2)\n\n\nsource\n\n\nthreshold_ddist\n\n threshold_ddist (dd, val, lt=True)\n\n\nsource\n\n\nmult_ddist_probs\n\n mult_ddist_probs (d, p)\n\n\nsource\n\n\nmult_ddist_vals\n\n mult_ddist_vals (d, val)\n\n\nsource\n\n\nagg_mod_kw\n\n agg_mod_kw (kw, kws)\n\n\nsource\n\n\nfind_kw\n\n find_kw (kw, kws)\n\n\nsource\n\n\nsingle_dam_dist\n\n single_dam_dist (wep, target, situation={})\n\n\nsource\n\n\natk_success_prob\n\n atk_success_prob (wep, target, situation={}, crit_hit=None,\n                   verbose=False)\n\n\nsource\n\n\natk_success_dist\n\n atk_success_dist (wep, target, situation={})\n\n\nsource\n\n\nsuccessful_atk_dist\n\n successful_atk_dist (wep, target, situation={})\n\n\nsource\n\n\ndam_dist\n\n dam_dist (wep, target, situation={}, n=1, fulldist=False,\n           spillover=False)\n\n\nwep = { 'type':'ranged', 'range': 24, 'attacks': '3', 'bsws': 3, 'strength': 5, 'AP': -2, 'damage': '2', 'kws': ['lethal hits', 'devastating wounds', 'melta d3+2', 'anti-infantry 3+', 'indirect fire'] }\ntarget = { 'toughness': 7, 'save': 2, 'invuln': None, 'wounds': 10, 'kws':['infantry'], 'abilities': ['feel no pain 5+'] }\nsituation = { 'cover':True, 'range': 10, 'overwatch': False, 'indirect': False }\ndam_dist(wep,target,situation)\n\n\nsource\n\n\nfulldist_convolve\n\n fulldist_convolve (fd1, fd2, n_wounds)\n\n\nwep = { 'type':'ranged', 'attacks': '3', 'bsws': 3, 'strength': 5, 'AP': -2, 'damage': '2', 'kws': ['lethal hits', 'devastating wounds', 'anti-infantry 4+'] }#, 'rapid fire d2', 'melta d3+2', 'sustained hits d3'] }\ntarget = { 'toughness': 3, 'save': 2, 'invuln': None, 'wounds': 3, 'kws':['infantry'], 'abilities': [] }#'feel no pain 5+', 'stealth'] }\ndd = dam_dist(wep,target,cover=True,s_range=True, fulldist=True)\nfulldist_convolve(dd,dd,target['wounds'])",
+    "crumbs": [
+      "01_dists.html"
+    ]
+  },
+  {
+    "objectID": "parsing.html",
+    "href": "parsing.html",
+    "title": "Read in unit info",
+    "section": "",
+    "text": "source\n\ncsv_files_to_dict\n\n csv_files_to_dict (csv_dir)",
+    "crumbs": [
+      "Read in unit info"
+    ]
+  }
+]
