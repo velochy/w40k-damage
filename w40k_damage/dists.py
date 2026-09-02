@@ -374,11 +374,15 @@ def successful_atk_dist(wep,target, situation={}):
         #print("Rapidfire",rfire)
         an_d = convolve(an_d,dd_from_str(rfire))
 
-    # Other added attacks, incl Blast
+    # Other added attacks, incl Blast and Cleave (melee blast, 11th ed):
+    # +1 (blast) or +X (cleave X) attacks per full 5 models in the target unit
     added_attacks = 0
-    if 'blast' in wep['kws'] and target.get('models',0)>=5:
-        #print("Blast")
-        added_attacks += target['models']//5
+    per5 = target.get('models',0)//5
+    if 'blast' in wep['kws']:
+        added_attacks += per5
+    cleave = find_kw('cleave',wep['kws'])
+    if cleave is not None:
+        added_attacks += int(cleave or 1)*per5
     if added_attacks!=0:
         an_d = convolve(an_d,{added_attacks:1})
 
@@ -389,6 +393,7 @@ def successful_atk_dist(wep,target, situation={}):
     res_d = dd_over_dd(an_d,as_d)
 
     return res_d
+
 
 # %% ../nbs/01_dists.ipynb 13
 # Damage requires its own convolutions that account for n_wounds and first_n
