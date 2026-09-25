@@ -148,3 +148,11 @@ def test_faction_variants_are_not_collapsed():
     assert len(facs) > 1
     assert unit_for(uid, facs[0]) is not unit_for(uid, facs[1])
     assert unit_for(uid, 'no-such-faction')['id'] == uid        # falls back
+
+
+def test_multiword_anti_matches_defender_keyword():
+    wep = {'profiles': [{'range': 12, 'stats': {'A': 1, 'S': 4, 'AP': 0, 'D': 1, 'BS': 3},
+                         'keywords': [{'keyword_id': 'anti', 'parameters': {'target_keyword': 'Epic Hero', 'threshold': 4}}]}]}
+    kw = weapon_profiles(wep)[0]['kws'][0]
+    dfn = defender_profile({'profiles': [{'T': 4, 'Sv': 3, 'W': 5}], 'keywords': ['Character', 'Epic Hero']}, abilities={})
+    assert kw.split(' ')[0][5:] in dfn['kws']

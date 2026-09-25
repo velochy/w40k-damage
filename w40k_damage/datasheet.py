@@ -216,7 +216,7 @@ def defender_profile(unit, models=None, abilities=None, profile_index=0,
     return {
         'name': unit.get('name'), 'unit_id': unit.get('id'),
         'toughness': T, 'save': Sv, 'invuln': inv, 'wounds': W, 'models': models,
-        'kws': [k.lower() for k in unit.get('keywords', [])],
+        'kws': [k.lower().replace(' ', '') for k in unit.get('keywords', [])],  # Spaceless, as in anti-X
         'abilities': sorted(set(extras)),
     }
 
