@@ -185,9 +185,10 @@ def get_hit_probs(wep,target,situation={}):
 
         hit_t = wep['bsws']
 
-        # Stealth
+        # Stealth and (11th ed) cover are -1 to hit vs ranged, within the usual +-1 cap
         ih = agg_mod_kw('mod hits',wep['kws'])
-        if wep['type']=='ranged' and 'stealth' in target['abilities']: ih +=1
+        if wep['type']=='ranged':
+            ih -= ('stealth' in target['abilities']) + (bool(situation.get('cover')) and 'ignores cover' not in wep['kws'])
         
         hit_t -= max(-1,min(1,ih))
 
@@ -276,12 +277,7 @@ def atk_success_prob(wep, target, situation={}, crit_hit=None, verbose=False):
     ap = wep['AP'] # NB! this is negative as in datasheets
     ap += max(-1,min(1,agg_mod_kw('mod ap',wep['kws'])))
     
-    # Cover effect - positive to neutralize the neg
-    c_eff = 0 if (not situation.get('cover') or wep['type']!='ranged' or 
-                'ignores cover' in wep['kws'] or 
-                (ap==0 and target['save']<=3)) else 1
-    
-    save = min(target['invuln'] or 10,target['save']-ap-c_eff)
+    save = min(target['invuln'] or 10,target['save']-ap)
     p_nsave = 1.0 - max(0,min(6,7-save))/6.0
 
     if 'devastating wounds' in wep['kws']: # Devastating wounds

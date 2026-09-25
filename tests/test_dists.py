@@ -1,5 +1,5 @@
 import pytest
-from w40k_damage.dists import (dam_dist, dd_mean, successful_atk_dist, dd_from_str,
+from w40k_damage.dists import (dam_dist, dd_mean, successful_atk_dist, dd_from_str, get_hit_probs, atk_success_prob,
                                find_kw, convolve, threshold_ddist)
 
 MELEE = {'type': 'melee', 'range': 1, 'attacks': '4', 'bsws': 3, 'strength': 7,
@@ -89,7 +89,7 @@ def test_readme_example_runs():
     tgt = {'toughness': 7, 'save': 2, 'invuln': None, 'wounds': 10,
            'kws': ['infantry'], 'abilities': ['feel no pain 5+']}
     sit = {'cover': True, 'range': 10, 'overwatch': False, 'indirect': False}
-    assert dd_mean(dam_dist(wep, tgt, sit)) == pytest.approx(5.682795, abs=1e-5)
+    assert dd_mean(dam_dist(wep, tgt, sit)) == pytest.approx(4.506550, abs=1e-5)  # 11th ed cover: -1 to hit
 
 
 def test_anti_keyword_applies_only_to_matching_target():
@@ -103,3 +103,25 @@ def test_anti_keyword_applies_only_to_matching_target():
     assert dd_mean(dam_dist(wep, monster, {}, spillover=True)) > dd_mean(dam_dist(plain, monster, {}, spillover=True))
     assert dd_mean(dam_dist(wep, infantry, {}, spillover=True)) == pytest.approx(
         dd_mean(dam_dist(plain, infantry, {}, spillover=True)))
+
+
+RANGED = {**MELEE, 'type': 'ranged', 'range': 24}
+ELITE = {'toughness': 4, 'save': 3, 'invuln': None, 'wounds': 1, 'kws': ['infantry'], 'abilities': []}
+hit = lambda kws=(), abilities=(), wep=RANGED, **sit: get_hit_probs(
+    {**wep, 'kws': list(kws)}, {**ELITE, 'abilities': list(abilities)}, sit)[0]
+save_fail = lambda wep, **sit: atk_success_prob(wep, ELITE, sit, crit_hit=False) / atk_success_prob(wep, {**ELITE, 'save': 7}, sit, crit_hit=False)
+
+
+def test_cover_is_minus_one_to_hit():  # 11th ed
+    assert hit(cover=True) == pytest.approx(3 / 6) and hit() == pytest.approx(4 / 6)
+    assert save_fail(RANGED, cover=True) == pytest.approx(save_fail(RANGED))
+
+
+def test_cover_exemptions():
+    assert hit(wep=MELEE, cover=True) == hit(wep=MELEE)
+    assert hit(['ignores cover'], cover=True) == hit()
+
+
+def test_cover_and_stealth_capped_at_minus_one():
+    assert hit(abilities=['stealth']) == hit(cover=True) == hit(abilities=['stealth'], cover=True)
+    assert hit(['mod hits 1'], cover=True) == hit()
