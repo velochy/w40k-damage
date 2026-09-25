@@ -1,5 +1,5 @@
 import pytest
-from w40k_damage.dists import (dam_dist, dd_mean, successful_atk_dist, dd_from_str, get_hit_probs, atk_success_prob,
+from w40k_damage.dists import (dam_dist, dd_mean, dd_above, successful_atk_dist, dd_from_str, get_hit_probs, atk_success_prob,
                                find_kw, convolve, threshold_ddist)
 
 MELEE = {'type': 'melee', 'range': 1, 'attacks': '4', 'bsws': 3, 'strength': 7,
@@ -126,3 +126,7 @@ def test_stealth_is_always_in_cover():  # 11th ed: no separate -1, so no stackin
     assert hit(abilities=['stealth']) == hit(cover=True) == hit(abilities=['stealth'], cover=True)
     assert hit(['ignores cover'], abilities=['stealth']) == hit(wep=MELEE, abilities=['stealth']) == hit()
     assert hit(['mod hits 1'], cover=True) == hit()
+
+
+def test_dd_above_never_negative():
+    assert dd_above({0: 0.39506172839506176, 1: 0.5802469135802469, 2: 0.02469135802469136}, 5) == 0.0  # sums to 1+2e-16

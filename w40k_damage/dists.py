@@ -90,7 +90,7 @@ def dd_above(d, thresh):
     for k,v in d.items():
         if k<thresh: p+=v
     # This approach is better if we prune the dist
-    return 1.0-p
+    return max(0.0, 1.0-p) # Float error can push p just above 1
 
 
 def dd_max(dd):
