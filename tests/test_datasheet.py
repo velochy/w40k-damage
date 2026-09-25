@@ -156,3 +156,8 @@ def test_multiword_anti_matches_defender_keyword():
     kw = weapon_profiles(wep)[0]['kws'][0]
     dfn = defender_profile({'profiles': [{'T': 4, 'Sv': 3, 'W': 5}], 'keywords': ['Character', 'Epic Hero']}, abilities={})
     assert kw.split(' ')[0][5:] in dfn['kws']
+
+
+def test_datasheet_target_picks_model_profile(units):
+    boyz = Datasheet(units['boyz'])
+    assert (boyz.target()['wounds'], boyz.target(profile_index=1)['wounds']) == (1, 3)

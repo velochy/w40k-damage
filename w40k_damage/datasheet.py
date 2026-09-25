@@ -291,9 +291,9 @@ class Datasheet:
     def id(self):
         return self.unit.get('id')
 
-    def target(self, models=None):
+    def target(self, models=None, profile_index=0):
         return defender_profile(self.unit, models=models if models is not None else self.models,
-                                abilities=self.abilities)
+                                abilities=self.abilities, profile_index=profile_index)
 
     def profiles(self):
         return [p for w in _weapons_for(self.unit, self.weapons) for p in weapon_profiles(w)]
