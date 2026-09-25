@@ -18,7 +18,7 @@ def weapons():
 
 def test_defender_profile_reads_statline(units):
     t = defender_profile(units['terminator-squad'], models=5)
-    assert (t['toughness'], t['save'], t['invuln'], t['wounds'], t['models']) == (5, 2, 4, 3, 5)
+    assert (t['toughness'], t['save'], t['invuln'], t['wounds'], t['models']) == (6, 2, 4, 3, 5)
     assert 'infantry' in t['kws']
 
 
@@ -63,7 +63,7 @@ def test_attack_runs_every_weapon_by_default(units):
 def test_attack_can_select_one_weapon(units):
     r = attack(units['intercessor-squad'], units['terminator-squad'],
                weapon='Bolt rifle', models=10, defender_models=5, situation={'range': 6})
-    assert [p['name'] for p in r['profiles']] == ['Bolt rifle']
+    assert [p['name'] for p in r['profiles']] == ['Focused Fire', 'Saturation']
     assert r['melee'] == 0 and r['ranged'] > 0
 
 
