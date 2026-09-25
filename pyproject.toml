@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "w40k-damage"
-version = "0.2.0"
+version = "0.3.0"
 description = "A Warhammer 40k (w40k) mathhammer library to calculate hit, wound, success and damage distributions"
 readme = "README.md"
 requires-python = ">=3.9"

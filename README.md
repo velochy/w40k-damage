@@ -25,32 +25,44 @@ Also introduces extra weapon keywords: 'reroll hits', 'reroll 1s to hit, 'hit cr
 
 ## Datasheets
 
-With the optional `wh40kdc` (40kdc-data) dependency you can run one datasheet
-against another instead of hand-writing stat dicts:
+With the optional `wh40kdc` (40kdc-data) dependency you can run 40kdc datasheets
+against each other. `Datasheet` takes the 40kdc dicts themselves -- the unit, and
+lists of its weapon and ability dicts (resolved from the bundle by id if omitted):
 
 ``` python
+from wh40kdc import Dataset
 from w40k_damage import Datasheet, attack
 
-atk, dfn = Datasheet('intercessor-squad', models=10), Datasheet('terminator-squad', models=5)
-atk.attack(dfn, situation={'range': 6})          # every weapon on the sheet
-atk.attack(dfn, weapon='Bolt rifle')             # one weapon or profile by name
-attack(attacker_json, defender_json)             # or pass raw 40kdc json
+ds = Dataset.embedded()
+unit = lambda name: ds.units.find(name)
+atk = Datasheet(unit('Intercessor Squad').raw, models=10)
+dfn = Datasheet(unit('Terminator Squad').raw, models=5, damage_taken=2)
+atk.attack(dfn, situation={'range': 6, 'cover': True})
+attack([atk, other_atk], dfn, spillover=False)   # several attackers, capped at wounds left
 ```
 
-Returns per-profile means plus `ranged` / `melee` / `total`. Weapon stats, keywords
-(including values such as `melta 2` / `rapid fire 1` / `anti-monster 4+`) and the
-defender's defensive abilities (Feel No Pain, invulnerable saves, damage reduction,
-T/W/Sv modifiers) are read from the bundle. Given a numeric `range`, weapons that
-cannot reach are dropped and melta/rapid-fire gate on half range.
+Model loadouts and buffs by editing the dicts: set `count` on a weapon profile
+(default: one per model), or append ability dicts whose effect tree says what they
+do, e.g. `{'scope': {'duration': 'permanent'}, 'effect': {'type': 'roll-modifier',
+'target': 'unit', 'modifier': {'roll': 'hit', 'operation': 'add', 'value': 1}}}`.
+Defensive effects (Feel No Pain, invulnerable saves, damage reduction, T/W/Sv),
+offensive ones (hit/wound modifiers, re-rolls, crit thresholds, A/S/AP, keyword
+grants) and `target: attacker` debuffs are all read from the effect tree.
+
+Returns per-profile means (`each` for one copy, `mean` for `count` copies), `ranged` /
+`melee` / `total`, and `dist`: every counted profile combined with per-model wound
+tracking. Given a numeric `range`, weapons that cannot reach are dropped and
+melta/rapid-fire gate on half range.
 
 Two conventions worth knowing:
 
-* `spillover=True` (the adapter's default) reports damage per activation without
-  capping at the defender's total wounds. Do **not** emulate this by inflating
-  `models` -- Blast and Cleave scale off `models`.
-* Only `permanent`-scope defensive abilities count by default, and ones gated on an
-  attack type (e.g. Feel No Pain vs Psychic only) are skipped. Pass `durations=None`
-  to include situational ones, or an `ability_filter` to inject your own corrections.
+* `spillover=True` (the default) reports damage per activation without capping at
+  the defender's total wounds. Do **not** emulate this by inflating `models` --
+  Blast and Cleave scale off `models`.
+* Only unconditional `permanent`-scope effects count by default (`is-attached` /
+  `model-is-leader` conditions count as met), and ones gated on an attack type (e.g.
+  Feel No Pain vs Psychic only) are skipped. Pass `durations=None` to include
+  situational ones, or edit the ability list to regate them.
 
 ## Development
 

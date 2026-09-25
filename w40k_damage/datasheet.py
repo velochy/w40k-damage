@@ -1,40 +1,35 @@
-"""Run one 40kdc datasheet against another.
+"""Run 40kdc datasheets against each other.
 
-Bridges the `wh40kdc` (40kdc-data) JSON schema to the weapon/target dicts that
-`dists.dam_dist` consumes, so callers can hand in two datasheets rather than
-hand-rolling stat conversion:
+Everything is plain 40kdc (`wh40kdc`) json: a unit dict plus lists of its weapon and
+ability dicts. Model loadouts and buffs by editing those dicts rather than through
+side channels -- set ``count`` on a weapon profile, or append ability dicts whose
+effect tree says what they do (e.g. a ``roll-modifier`` of +1 to hit):
 
-    from w40k_damage import attack
-    res = attack(attacker_json, defender_json)                  # every weapon
-    res = attack(attacker_json, defender_json, weapon='Bolt rifle')
-
-`weapons`/`abilities` may be passed explicitly as {id: json}; if omitted they are
-resolved from the installed `wh40kdc` bundle (optional dependency).
+    from w40k_damage import Datasheet
+    atk = Datasheet(unit, weapons=[...], abilities=[...], models=10)
+    atk.attack(Datasheet(other_unit), situation={'cover': True})
 
 Conversion notes, all verified against the 40kdc bundle rather than assumed:
 
-* Keyword VALUES live under ``parameters.value`` -- the top-level ``value`` key is
-  absent, so reading it silently drops every rapid-fire/melta/sustained/anti-X.
-* Anti-X names its target in ``parameters.target_keyword`` (``'Monster'``), not
-  ``target``; the threshold is ``parameters.threshold``.
+* Keyword VALUES live under ``parameters.value``; Anti-X names its target in
+  ``parameters.target_keyword``.
 * A weapon's ``type`` is per WEAPON but profiles are mixed: a melee profile on a
   ranged weapon carries ``range: 'Melee'``. Type is therefore derived per profile.
-* Defensive abilities (FNP / invuln / damage reduction / T,W,Sv modifiers) are read
-  from the effect tree. ``is-attached`` and ``model-is-leader`` conditions are
-  treated as active (the normal state for the units that have them); other
-  conditional effects are skipped.
+* Ability effects are read from the effect tree: defensive ones (FNP, invuln, damage
+  reduction, T/W/Sv) apply to the unit, offensive ones (hit/wound modifiers, re-rolls,
+  crit thresholds, A/S/AP, keyword grants) to its weapons, and ``target: attacker``
+  ones to weapons attacking it. ``is-attached`` / ``model-is-leader`` conditions
+  count as active; other conditional or non-``permanent`` effects are skipped.
 
-`spillover=True` (the default here) drops `dam_dist`'s cap at the defender's total
-wounds, giving damage-per-activation independent of squad size; per-model overkill
-is still modelled. Do NOT inflate `models` to emulate this -- Blast and Cleave scale
-off `models` and would explode.
+`spillover=True` (the default) drops the cap at the defender's total wounds, giving
+damage-per-activation; per-model overkill is still modelled. Do NOT inflate `models`
+to emulate this -- Blast and Cleave scale off `models`.
 """
 import json
 import re
-from .dists import dam_dist, dd_mean
+from .dists import dam_dist, dd_mean, dd_cap, fulldist_convolve
 
-__all__ = ['Datasheet', 'weapon_profiles', 'defender_profile', 'attack', 'unit_for',
-           'variants_of', 'KEYWORD_MAP']
+__all__ = ['Datasheet', 'attack', 'weapon_profiles', 'KEYWORD_MAP']
 
 #: 40kdc weapon keyword id -> the string `dists` expects. Keywords absent here are
 #: not modelled by the damage engine and are dropped (e.g. `psychic`, which is a
@@ -48,52 +43,32 @@ KEYWORD_MAP = {
     'assault': 'assault', 'pistol': 'pistol', 'anti': 'anti',
 }
 _VALUED = ('melta', 'sustained-hits', 'rapid-fire', 'cleave')
-
-
-def _bundle():
-    import wh40kdc
-    with open(wh40kdc.__path__[0] + '/_bundle.json') as f:
-        return json.load(f)
-
+_OWN = (None, 'unit', 'self', 'bearer', 'attached-unit')     # effect targets that buff the ability's owner
+_REROLL = {('hit', 'all-failures'): 'reroll hits', ('hit', 'ones'): 'reroll 1s to hit',
+           ('wound', 'all-failures'): 'reroll wounds', ('wound', 'ones'): 'reroll 1s to wound'}
+_STAT = {'A': 'attacks', 'S': 'strength', 'AP': 'ap'}
 
 _CACHE = {}
 
 
-def _lookup(kind):
-    if kind not in _CACHE:
-        b = _bundle()
-        _CACHE['weapons'] = {w['id']: w for w in b['weapons']}
-        _CACHE['abilities'] = {a['ability_id']: a for a in b['abilities']}
-        # ~31 datasheets ship one variant PER FACTION (the Defiler has four, with
-        # different abilities and keywords). An id-keyed dict keeps whichever came
-        # last, so every faction's copy would be built from one arbitrary army's
-        # rules -- keep them all and let the caller pick.
-        variants = {}
-        for u in b['units']:
-            variants.setdefault(u['id'], {})[u.get('faction_id')] = u
-        _CACHE['variants'] = variants
-        _CACHE['units'] = {uid: next(iter(v.values())) for uid, v in variants.items()}
-    return _CACHE[kind]
-
-
-def unit_for(unit_id, faction=None):
-    """Datasheet json for `unit_id`, picking the faction's variant where several exist."""
-    v = _lookup('variants').get(unit_id) or {}
-    if not v:
-        raise KeyError(unit_id)
-    return v.get(faction) or next(iter(v.values()))
-
-
-def variants_of(unit_id):
-    """{faction_id: datasheet} for a unit id -- >1 entry means faction-specific rules."""
-    return dict(_lookup('variants').get(unit_id) or {})
+def _resolve(kind, ids, faction):
+    """Bundle dicts for `ids`, preferring `faction`'s copy of ids shipped once per faction."""
+    if not _CACHE:
+        import wh40kdc
+        with open(wh40kdc.__path__[0] + '/_bundle.json') as f:
+            b = json.load(f)
+        for k, key in (('weapons', 'id'), ('abilities', 'ability_id')):
+            _CACHE[k] = {}
+            for x in b[k]:
+                _CACHE[k].setdefault(x[key], {})[x.get('faction_id')] = x
+    lut = _CACHE[kind]
+    return [(lut[i].get(faction) or next(iter(lut[i].values()))) for i in ids or [] if i in lut]
 
 
 def _kws(profile):
     out = []
     for k in profile.get('keywords', []):
-        kid = k.get('keyword_id')
-        par = k.get('parameters') or {}
+        kid, par = k.get('keyword_id'), k.get('parameters') or {}
         name = KEYWORD_MAP.get(kid)
         if not name:
             continue
@@ -108,6 +83,17 @@ def _kws(profile):
     return out
 
 
+def _granted_kw(s):
+    """Keyword-grant text ('Sustained Hits 1', 'Anti-Infantry 4+') -> 40kdc keyword dict."""
+    s = s.strip().lower()
+    m = re.fullmatch(r'anti-(.+) (\d)\+', s)
+    if m:
+        return {'keyword_id': 'anti', 'parameters': {'target_keyword': m[1], 'threshold': int(m[2])}}
+    m = re.fullmatch(r'(.+?) (\d+|d\d(?:\+\d+)?)', s)
+    base, val = (m[1], m[2].upper()) if m else (s, None)
+    return {'keyword_id': base.replace(' ', '-'), 'parameters': {'value': val} if val else {}}
+
+
 def weapon_profiles(weapon):
     """40kdc weapon json -> list of `dists` weapon dicts (one per profile)."""
     out = []
@@ -117,194 +103,156 @@ def weapon_profiles(weapon):
         melee = rng in (None, 'Melee', 'melee') or (s.get('WS') is not None and s.get('BS') is None)
         skill = (s.get('WS') if melee else s.get('BS')) or s.get('BS') or s.get('WS') or 4
         out.append({
-            'name': p.get('name') or weapon.get('name'),
-            'weapon_id': weapon.get('id'),
-            'type': 'melee' if melee else 'ranged',
-            'range': 1 if melee else rng,
-            'attacks': str(s.get('A', '1')),
-            'bsws': skill,
-            'strength': s.get('S', 4),
-            'AP': -abs(s.get('AP', 0)),
-            'damage': str(s.get('D', '1')),
-            'kws': _kws(p),
+            'name': p.get('name') or weapon.get('name'), 'weapon_id': weapon.get('id'),
+            'type': 'melee' if melee else 'ranged', 'range': 1 if melee else rng,
+            'attacks': str(s.get('A', '1')), 'bsws': skill, 'strength': s.get('S', 4),
+            'AP': -abs(s.get('AP', 0)), 'damage': str(s.get('D', '1')), 'kws': _kws(p),
+            'count': p.get('count'),
         })
     return out
 
 
-def _defensive_effects(effect, out, conditional=False):
-    """Collect (kind, value) defensive effects; is-attached/model-is-leader count as active."""
+def _active(effect, conditional=False):
+    """Leaf effects that are always on; is-attached / model-is-leader conditions count as met."""
     if isinstance(effect, list):
         for e in effect:
-            _defensive_effects(e, out, conditional)
+            yield from _active(e, conditional)
         return
     if not isinstance(effect, dict):
         return
-    t = effect.get('type')
-    if t == 'conditional':
+    if effect.get('type') == 'conditional':
         ctype = (effect.get('condition') or {}).get('type')
-        active = conditional if ctype in ('is-attached', 'model-is-leader') else True
-        _defensive_effects(effect.get('effect'), out, active)
+        yield from _active(effect.get('effect'), conditional if ctype in ('is-attached', 'model-is-leader') else True)
         return
-    m = effect.get('modifier') or {}
-    if m.get('against_attack_type'):
-        return                                   # e.g. FNP only vs Psychic attacks
-    if not conditional:
-        if t == 'feel-no-pain' and m.get('threshold'):
-            out.append(('fnp', m['threshold']))
-        elif t == 'invulnerable-save' and m.get('invuln_sv'):
-            out.append(('invuln', m['invuln_sv']))
-        elif t == 'damage-reduction':
-            out.append(('damage-reduction', m.get('reduction', 1)))
-        elif t == 'stat-modifier' and m.get('stat') in ('T', 'W', 'Sv'):
-            val = m.get('value', 0) * (-1 if m.get('operation') == 'subtract' else 1)
-            out.append((('set:' if m.get('operation') == 'set' else 'mod:') + m['stat'], val))
-    for k, v in effect.items():
-        if k in ('effect', 'effects', 'steps', 'sequence', 'then', 'otherwise', 'options'):
-            _defensive_effects(v, out, conditional)
+    if not conditional and not (effect.get('modifier') or {}).get('against_attack_type'):  # e.g. FNP vs Psychic only
+        yield effect
+    for k in ('effect', 'effects', 'steps', 'sequence', 'then', 'otherwise', 'options'):
+        if k in effect:
+            yield from _active(effect[k], conditional)
 
 
-def defender_profile(unit, models=None, abilities=None, profile_index=0,
-                     ability_filter=None, durations=('permanent',)):
-    """40kdc unit json -> a `dists` target dict, with defensive abilities applied.
-
-    durations       -- ability scope durations counted as always-on. The bundle also
-                       carries 'phase'/'battle'/'one-use' effects, which are situational
-                       and off by default. Pass None to accept every duration.
-    ability_filter  -- optional f(ability_id, ability) -> ability | None, applied before
-                       the effect tree is read. Use it to inject corrections (e.g. an
-                       audit that re-gates abilities the bundle encodes unconditionally)
-                       without the library hardcoding them.
-    """
-    profs = unit.get('profiles') or []
-    if not profs:
-        return None
-    p = profs[profile_index]
-    T, Sv, W, inv = p.get('T'), p.get('Sv'), p.get('W'), p.get('invuln_sv')
-    if not all((T, Sv, W)):
-        return None
-    if models is None:
-        models = (unit.get('model_count') or {}).get('min', 1)
-    abil = abilities if abilities is not None else (_lookup('abilities') if unit.get('ability_ids') else {})
-    eff = []
-    for aid in unit.get('ability_ids', []):
-        a = abil.get(aid) or {}
-        if ability_filter is not None:
-            a = ability_filter(aid, a)
-            if not a:
-                continue
-        if durations and (a.get('scope') or {}).get('duration') not in durations:
-            continue
-        _defensive_effects(a.get('effect') or {}, eff)
-    extras = []
-    for kind, val in eff:
-        if kind == 'fnp':
-            extras.append(f"feel no pain {val}+")
-        elif kind == 'invuln':
-            inv = val if not inv or val < inv else inv
-        elif kind == 'damage-reduction':
-            extras.append('halve damage' if val == 'half' else 'damage reduction 1')
-        elif kind == 'mod:T':
-            T += val
-        elif kind == 'mod:W':
-            W += val
-        elif kind == 'mod:Sv':
-            Sv -= val
-        elif kind == 'set:Sv':
-            Sv = min(Sv, val)
-    if 'stealth' in (unit.get('ability_ids') or []):
-        extras.append('stealth')
-    return {
-        'name': unit.get('name'), 'unit_id': unit.get('id'),
-        'toughness': T, 'save': Sv, 'invuln': inv, 'wounds': W, 'models': models,
-        'kws': [k.lower().replace(' ', '') for k in unit.get('keywords', [])],  # Spaceless, as in anti-X
-        'abilities': sorted(set(extras)),
-    }
-
-
-def _weapons_for(unit, weapons):
-    lut = weapons if weapons is not None else _lookup('weapons')
-    return [lut[w] for w in unit.get('weapon_ids', []) if w in lut]
-
-
-def attack(attacker, defender, weapon=None, counts=None, models=None,
-           defender_models=None, situation=None, spillover=True,
-           weapons=None, abilities=None):
-    """Damage `attacker` deals to `defender` in one activation.
-
-    weapon   -- weapon or profile name; None runs every weapon on the datasheet
-    counts   -- {weapon_id: n}; default is one of each weapon per attacking model
-    models   -- attacker model count (default: datasheet minimum)
-    situation-- passed to dam_dist; 'range' may be inches (melta/rapid-fire gate on
-                half range) or a bool. Given inches, ranged profiles that cannot reach
-                that far are dropped. Melee profiles are always resolved in range.
-
-    -> {'profiles': [{name, type, count, mean, dist}], 'ranged', 'melee', 'total'}
-    """
-    tgt = defender_profile(defender, models=defender_models, abilities=abilities)
-    if tgt is None:
-        raise ValueError(f"defender {defender.get('id')} has no usable statline")
-    if models is None:
-        models = (attacker.get('model_count') or {}).get('min', 1)
-    sit = {'cover': False, 'range': False, 'overwatch': False, 'indirect': False}
-    sit.update(situation or {})
-
-    rows = []
-    for w in _weapons_for(attacker, weapons):
-        for p in weapon_profiles(w):
-            if weapon and weapon.lower() not in (str(p['name']).lower(), str(w.get('name', '')).lower()):
-                continue
-            n = (counts or {}).get(w['id'], models)
-            if not n:
-                continue
-            s = dict(sit)
-            if p['type'] == 'melee':
-                s['range'] = True
-            elif isinstance(s['range'], (int, float)) and not isinstance(s['range'], bool):
-                if isinstance(p['range'], (int, float)) and p['range'] < s['range']:
-                    continue                      # weapon cannot reach the target
-            d = dam_dist(p, dict(tgt), s, spillover=spillover)
-            if isinstance(d, list):
-                d = d[0]
-            rows.append({'name': p['name'], 'weapon_id': w['id'], 'type': p['type'],
-                         'count': n, 'mean': dd_mean(d) * n, 'dist': d})
-    if weapon and not rows:
-        raise ValueError(f"no weapon matching {weapon!r} on {attacker.get('id')}")
-    return {
-        'attacker': attacker.get('id'), 'defender': defender.get('id'),
-        'profiles': rows,
-        'ranged': sum(r['mean'] for r in rows if r['type'] == 'ranged'),
-        'melee': sum(r['mean'] for r in rows if r['type'] == 'melee'),
-        'total': sum(r['mean'] for r in rows),
-    }
+def _offense_kws(e):
+    """Leaf effect -> (engine weapon keywords, weapon type it is limited to or None)."""
+    t, m = e.get('type'), e.get('modifier') or {}
+    v, sign = m.get('value'), -1 if m.get('operation') == 'subtract' else 1
+    wtype = m.get('weapon_type') or m.get('attack_type')
+    if t in ('roll-modifier', 'stat-modifier') and not isinstance(v, int):
+        return [], None                       # dice-valued or malformed; not modelled
+    if t == 'roll-modifier' and m.get('roll') in ('hit', 'wound') and not m.get('context'):
+        if m.get('operation') in ('add', 'subtract'):
+            return [f"mod {m['roll']}s {sign * v}"], wtype
+        if m.get('operation') == 'crit-on':
+            return [f"{m['roll']} crit {v}+"], wtype
+    elif t == 're-roll' and (m.get('roll'), m.get('subset')) in _REROLL and not m.get('uses'):
+        return [_REROLL[m['roll'], m['subset']]], wtype
+    elif t == 'stat-modifier' and m.get('stat') in _STAT and m.get('operation') in ('add', 'subtract'):
+        return [f"mod {_STAT[m['stat']]} {sign * v}"], wtype
+    elif t == 'keyword-grant':
+        return _kws({'keywords': [_granted_kw(k) for k in m.get('keywords') or []]}), wtype
+    return [], None
 
 
 class Datasheet:
-    """Thin convenience wrapper: `Datasheet(json).attack(other)`."""
+    """A 40kdc unit with its weapon and ability dicts (resolved from the bundle by id if omitted)."""
 
-    def __init__(self, unit, weapons=None, abilities=None, models=None, faction=None):
-        if isinstance(unit, str):                       # unit id -> look it up
-            unit = unit_for(unit, faction)
-        self.unit, self.weapons, self.abilities = unit, weapons, abilities
+    def __init__(self, unit, weapons=None, abilities=None, models=None, profile_index=0,
+                 damage_taken=0, durations=('permanent',)):
+        fac = unit.get('faction_id')
+        self.unit = unit
+        self.weapons = weapons if weapons is not None else _resolve('weapons', unit.get('weapon_ids'), fac)
+        self.abilities = abilities if abilities is not None else _resolve('abilities', unit.get('ability_ids'), fac)
         self.models = models if models is not None else (unit.get('model_count') or {}).get('min', 1)
+        self.profile_index, self.damage_taken, self.durations = profile_index, damage_taken, durations
 
-    @property
-    def id(self):
-        return self.unit.get('id')
+    def effects(self):
+        """Active leaf effects of this unit's abilities."""
+        return [e for a in self.abilities
+                if not self.durations or (a.get('scope') or {}).get('duration') in self.durations
+                for e in _active(a.get('effect') or {})]
 
-    def target(self, models=None, profile_index=0):
-        return defender_profile(self.unit, models=models if models is not None else self.models,
-                                abilities=self.abilities, profile_index=profile_index)
+    def _offense(self, targets):
+        return [kt for e in self.effects() if e.get('target') in targets for kt in [_offense_kws(e)] if kt[0]]
 
     def profiles(self):
-        return [p for w in _weapons_for(self.unit, self.weapons) for p in weapon_profiles(w)]
+        """`dists` weapon dicts with this unit's own offensive effects applied; count defaults to models."""
+        mods = self._offense(_OWN)
+        return [p | {'count': self.models if p['count'] is None else p['count'],
+                     'kws': p['kws'] + [k for kws, t in mods if t in (None, p['type']) for k in kws]}
+                for w in self.weapons for p in weapon_profiles(w)]
 
-    def attack(self, other, weapon=None, **kw):
-        o = other.unit if isinstance(other, Datasheet) else other
-        kw.setdefault('models', self.models)
-        kw.setdefault('defender_models', other.models if isinstance(other, Datasheet) else None)
-        kw.setdefault('weapons', self.weapons)
-        kw.setdefault('abilities', self.abilities)
-        return attack(self.unit, o, weapon=weapon, **kw)
+    def incoming(self):
+        """(keywords, weapon type) modifiers this unit imposes on attacks against it."""
+        return self._offense(('attacker',))
+
+    def target(self):
+        """`dists` target dict: statline, defensive effects, models and damage already taken."""
+        p = (self.unit.get('profiles') or [])[self.profile_index]
+        st, inv, extras = {k: p.get(k) for k in ('T', 'W', 'Sv')}, p.get('invuln_sv'), []
+        for e in self.effects():
+            t, m = e.get('type'), e.get('modifier') or {}
+            if t == 'feel-no-pain' and m.get('threshold'):
+                extras.append(f"feel no pain {m['threshold']}+")
+            elif t == 'invulnerable-save' and m.get('invuln_sv'):
+                inv = min(inv or 7, m['invuln_sv'])
+            elif t == 'damage-reduction':
+                extras.append('halve damage' if m.get('reduction') == 'half' else 'damage reduction 1')
+            elif t == 'ability-grant' and m.get('ability_id') == 'benefit-of-cover' and e.get('target') in _OWN:
+                extras.append('stealth')
+            elif t == 'stat-modifier' and m.get('stat') in st and e.get('target') in _OWN and isinstance(m.get('value'), int):
+                val = m['value'] * (-1 if m.get('operation') == 'subtract' else 1)
+                if m.get('operation') == 'set':
+                    st['Sv'] = min(st['Sv'], val) if m['stat'] == 'Sv' else st['Sv']
+                else:
+                    st[m['stat']] += -val if m['stat'] == 'Sv' else val   # +1 to a save lowers Sv
+        if any(a.get('ability_id') == 'stealth' for a in self.abilities):
+            extras.append('stealth')
+        W = st['W']
+        return {
+            'name': self.unit.get('name'), 'unit_id': self.unit.get('id'),
+            'toughness': st['T'], 'save': st['Sv'], 'invuln': inv, 'wounds': W,
+            'models': self.models - self.damage_taken // W, 'damage_taken': self.damage_taken % W,
+            'kws': [k.lower().replace(' ', '') for k in self.unit.get('keywords', [])],  # Spaceless, as in anti-X
+            'abilities': sorted(set(extras)),
+        }
+
+    def attack(self, other, **kw):
+        return attack(self, other, **kw)
 
     def __repr__(self):
-        return f"<Datasheet {self.id} x{self.models}>"
+        return f"<Datasheet {self.unit.get('id')} x{self.models}>"
+
+
+def attack(attackers, defender, situation=None, spillover=True):
+    """Damage one or more attacking Datasheets deal to `defender` in one activation.
+
+    situation -- passed to dam_dist; 'range' may be inches (melta/rapid-fire gate on half
+                 range, ranged profiles that cannot reach are dropped) or a bool.
+    -> {'profiles': [{name, weapon_id, type, count, each, mean}], 'ranged', 'melee', 'total',
+        'dist'}: `each` is the mean for one copy of the profile; `dist` combines every counted
+        profile with per-model wound tracking, from the defender's damage already taken.
+    """
+    attackers = [attackers] if isinstance(attackers, Datasheet) else attackers
+    tgt, inc = defender.target(), defender.incoming()
+    sit = {'cover': False, 'range': False, 'overwatch': False, 'indirect': False, **(situation or {})}
+    rows, cum = [], None
+    for p in (p for a in attackers for p in a.profiles()):
+        s = dict(sit)
+        if p['type'] == 'melee':
+            s['range'] = True
+        elif isinstance(s['range'], (int, float)) and not isinstance(s['range'], bool):
+            if isinstance(p['range'], (int, float)) and p['range'] < s['range']:
+                continue                      # weapon cannot reach the target
+        p = p | {'kws': p['kws'] + [k for kws, t in inc if t in (None, p['type']) for k in kws]}
+        each = dd_mean(dam_dist(p, dict(tgt), s, spillover=spillover))
+        rows.append({'name': p['name'], 'weapon_id': p['weapon_id'], 'type': p['type'],
+                     'count': p['count'], 'each': each, 'mean': each * p['count']})
+        if p['count']:
+            fd = dam_dist(p, dict(tgt), s, n=p['count'], spillover=spillover, fulldist=True)
+            cum = fd if cum is None else fulldist_convolve(cum, fd, tgt['wounds'])
+    dist = cum[tgt['damage_taken']] if cum else {0: 1.0}
+    if not spillover:
+        dist = dd_cap(dist, tgt['models'] * tgt['wounds'] - tgt['damage_taken'])
+    return {'profiles': rows, 'dist': dist,
+            'ranged': sum(r['mean'] for r in rows if r['type'] == 'ranged'),
+            'melee': sum(r['mean'] for r in rows if r['type'] == 'melee'),
+            'total': sum(r['mean'] for r in rows)}

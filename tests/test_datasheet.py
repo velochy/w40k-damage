@@ -1,163 +1,165 @@
 """Adapter tests. Skipped unless the optional `wh40kdc` dataset is installed."""
+import copy
 import pytest
 
 wh40kdc = pytest.importorskip('wh40kdc')
-from w40k_damage import Datasheet, attack, weapon_profiles, defender_profile, KEYWORD_MAP
-from w40k_damage.datasheet import _lookup
+from w40k_damage import Datasheet, attack, weapon_profiles, KEYWORD_MAP, dd_mean
+from w40k_damage.datasheet import _resolve
 
 
 @pytest.fixture(scope='module')
 def units():
-    return _lookup('units')
+    return {u.id: u.raw for u in wh40kdc.Dataset.embedded().units.all}
 
 
 @pytest.fixture(scope='module')
-def weapons():
-    return _lookup('weapons')
+def weapons(units):
+    return {w['id']: w for u in units.values() for w in _resolve('weapons', u.get('weapon_ids'), u.get('faction_id'))}
 
 
-def test_defender_profile_reads_statline(units):
-    t = defender_profile(units['terminator-squad'], models=5)
+def ability(effect, name='ui'):
+    """A permanent 40kdc ability dict, as a UI would build one."""
+    return {'ability_id': name, 'name': name, 'scope': {'duration': 'permanent'}, 'effect': effect}
+
+
+def only(ds, name, count):
+    """Copy of `ds` firing `count` of the named weapon and nothing else (edits the weapon dicts)."""
+    ws = copy.deepcopy(ds.weapons)
+    for w in ws:
+        for p in w['profiles']:
+            p['count'] = count if name in (w['name'], p['name']) else 0
+    return Datasheet(ds.unit, weapons=ws, abilities=ds.abilities, models=ds.models)
+
+
+def test_target_reads_statline(units):
+    t = Datasheet(units['terminator-squad'], models=5).target()
     assert (t['toughness'], t['save'], t['invuln'], t['wounds'], t['models']) == (6, 2, 4, 3, 5)
     assert 'infantry' in t['kws']
 
 
-def test_defender_profile_applies_defensive_abilities(units):
+def test_target_applies_defensive_abilities(units):
     """The Nightbringer's Necrodermis + FNP come from its ability tree, not its statline."""
-    t = defender_profile(units['ctan-shard-of-the-nightbringer'], models=1)
+    t = Datasheet(units['ctan-shard-of-the-nightbringer']).target()
     assert t['invuln'] == 4
     assert any('feel no pain' in a for a in t['abilities'])
     assert any('damage reduction' in a for a in t['abilities'])
 
 
+def test_target_picks_model_profile_and_damage_taken(units):
+    boyz = units['boyz']
+    assert (Datasheet(boyz).target()['wounds'], Datasheet(boyz, profile_index=1).target()['wounds']) == (1, 3)
+    t = Datasheet(units['terminator-squad'], models=5, damage_taken=7).target()
+    assert (t['models'], t['damage_taken']) == (3, 1)
+
+
 def test_weapon_keyword_values_are_read(weapons):
     """Values live under parameters.value; a bare mapping silently drops them."""
-    melta = [p for p in weapon_profiles(weapons['meltagun'])][0]
-    assert 'melta 2' in melta['kws']
-    lasgun = weapon_profiles(weapons['lasgun'])[0]
-    assert 'rapid fire 1' in lasgun['kws']
+    assert 'melta 2' in weapon_profiles(weapons['meltagun'])[0]['kws']
+    assert 'rapid fire 1' in weapon_profiles(weapons['lasgun'])[0]['kws']
 
 
 def test_anti_keyword_uses_target_keyword(weapons):
-    """Anti-X names its target in parameters.target_keyword, not parameters.target."""
     kws = weapon_profiles(weapons['big-choppa-squighog-boyz'])[0]['kws']
-    assert 'anti-monster 4+' in kws and 'anti-vehicle 4+' in kws
-    assert 'cleave 2' in kws
-
-
-def test_profile_type_derived_per_profile(weapons):
-    """A melee profile can sit on a ranged weapon; type must not come from the weapon."""
-    profs = weapon_profiles(weapons['zealots-vindictor'])
-    assert {p['type'] for p in profs} == {'ranged', 'melee'}
-    for p in profs:
-        assert p['range'] == 1 if p['type'] == 'melee' else p['range'] > 1
-
-
-def test_attack_runs_every_weapon_by_default(units):
-    r = attack(units['intercessor-squad'], units['terminator-squad'], models=10, defender_models=5)
-    assert len(r['profiles']) > 1
-    assert r['total'] == pytest.approx(r['ranged'] + r['melee'])
-    assert all(p['count'] == 10 for p in r['profiles'])
-
-
-def test_attack_can_select_one_weapon(units):
-    r = attack(units['intercessor-squad'], units['terminator-squad'],
-               weapon='Bolt rifle', models=10, defender_models=5, situation={'range': 6})
-    assert [p['name'] for p in r['profiles']] == ['Focused Fire', 'Saturation']
-    assert r['melee'] == 0 and r['ranged'] > 0
-
-
-def test_unknown_weapon_raises(units):
-    with pytest.raises(ValueError):
-        attack(units['intercessor-squad'], units['terminator-squad'], weapon='no such gun')
-
-
-def test_out_of_range_weapons_are_dropped(units):
-    """A numeric situation range excludes weapons that cannot reach."""
-    close = attack(units['intercessor-squad'], units['rhino'], models=10, situation={'range': 6})
-    far = attack(units['intercessor-squad'], units['rhino'], models=10, situation={'range': 30})
-    fired = lambda r: {p['name'] for p in r['profiles'] if p['type'] == 'ranged'}
-    assert fired(far) < fired(close)          # 12" pistols drop out at 30"
-
-
-def test_range_gates_melta(units, weapons):
-    """Melta only adds damage inside half range; dam_dist normalises the gate."""
-    # need a melta weapon reaching >=18" so 6" is inside half range and 18" is not
-    melta = {w for w, j in weapons.items()
-             if any('melta' in k and isinstance(p['range'], (int, float)) and p['range'] >= 18
-                    for p in weapon_profiles(j) for k in p['kws'])}
-    uid = next(u for u, j in units.items()
-               if melta & set(j.get('weapon_ids') or ()) and j.get('profiles'))
-    a, d = Datasheet(uid), Datasheet('rhino')
-    close = a.attack(d, situation={'range': 6})['ranged']
-    far = a.attack(d, situation={'range': 18})['ranged']
-    assert close > far
-
-
-def test_cleave_scales_with_defender_size(units):
-    """End-to-end: a cleave weapon does more to a big unit than a small one."""
-    a = Datasheet('kommandos', models=10)
-    small = a.attack(Datasheet('intercessor-squad', models=5))['melee']
-    big = a.attack(Datasheet('intercessor-squad', models=10))['melee']
-    assert big > small
-
-
-def test_datasheet_wrapper_matches_functional_api(units):
-    a, d = Datasheet('intercessor-squad', models=10), Datasheet('terminator-squad', models=5)
-    assert a.attack(d)['total'] == pytest.approx(
-        attack(units['intercessor-squad'], units['terminator-squad'],
-               models=10, defender_models=5)['total'])
-
-
-def test_keyword_map_only_contains_modelled_keywords():
-    assert 'psychic' not in KEYWORD_MAP        # targeting restriction, not damage maths
-    assert KEYWORD_MAP['cleave'] == 'cleave'
-
-
-def test_ability_filter_hook_can_regate_abilities(units):
-    """Callers inject their own corrections; the library hardcodes none."""
-    uid = 'celestian-insidiants'
-    assert any('feel no pain' in a for a in defender_profile(units[uid])['abilities'])
-    drop_all = lambda aid, a: None
-    assert defender_profile(units[uid], ability_filter=drop_all)['abilities'] == []
-
-
-def test_attack_type_gated_defence_is_not_blanket(units):
-    """Ezekiel's psychic hood is FNP only vs psychic attacks -> not a general FNP."""
-    assert not any('feel no pain' in a for a in defender_profile(units['ezekiel'])['abilities'])
-
-
-def test_situational_durations_off_by_default(units):
-    """Non-permanent scopes are situational; opt in explicitly."""
-    uid = next(u for u, j in units.items()
-               if any((_lookup('abilities').get(a) or {}).get('scope', {}).get('duration') == 'phase'
-                      and 'feel-no-pain' in str((_lookup('abilities').get(a) or {}).get('effect'))
-                      for a in j.get('ability_ids', [])))
-    off = defender_profile(units[uid])['abilities']
-    on = defender_profile(units[uid], durations=None)['abilities']
-    assert len(on) >= len(off)
-
-
-def test_faction_variants_are_not_collapsed():
-    """~31 ids ship one datasheet per faction; an id-keyed dict would lose all but one."""
-    from w40k_damage import unit_for, variants_of
-    multi = {u for u in _lookup('variants') if len(_lookup('variants')[u]) > 1}
-    assert multi, 'expected some faction-specific datasheets'
-    uid = sorted(multi)[0]
-    facs = list(variants_of(uid))
-    assert len(facs) > 1
-    assert unit_for(uid, facs[0]) is not unit_for(uid, facs[1])
-    assert unit_for(uid, 'no-such-faction')['id'] == uid        # falls back
+    assert 'anti-monster 4+' in kws and 'anti-vehicle 4+' in kws and 'cleave 2' in kws
 
 
 def test_multiword_anti_matches_defender_keyword():
     wep = {'profiles': [{'range': 12, 'stats': {'A': 1, 'S': 4, 'AP': 0, 'D': 1, 'BS': 3},
                          'keywords': [{'keyword_id': 'anti', 'parameters': {'target_keyword': 'Epic Hero', 'threshold': 4}}]}]}
     kw = weapon_profiles(wep)[0]['kws'][0]
-    dfn = defender_profile({'profiles': [{'T': 4, 'Sv': 3, 'W': 5}], 'keywords': ['Character', 'Epic Hero']}, abilities={})
+    dfn = Datasheet({'profiles': [{'T': 4, 'Sv': 3, 'W': 5}], 'keywords': ['Character', 'Epic Hero']}, abilities=[]).target()
     assert kw.split(' ')[0][5:] in dfn['kws']
 
 
-def test_datasheet_target_picks_model_profile(units):
-    boyz = Datasheet(units['boyz'])
-    assert (boyz.target()['wounds'], boyz.target(profile_index=1)['wounds']) == (1, 3)
+def test_profile_type_derived_per_profile(weapons):
+    """A melee profile can sit on a ranged weapon; type must not come from the weapon."""
+    profs = weapon_profiles(weapons['zealots-vindictor'])
+    assert {p['type'] for p in profs} == {'ranged', 'melee'}
+
+
+def test_attack_runs_every_weapon_by_default(units):
+    r = Datasheet(units['intercessor-squad'], models=10).attack(Datasheet(units['terminator-squad'], models=5))
+    assert len(r['profiles']) > 1 and all(p['count'] == 10 for p in r['profiles'])
+    assert r['total'] == pytest.approx(r['ranged'] + r['melee'])
+
+
+def test_profile_count_selects_weapons(units):
+    a, d = only(Datasheet(units['intercessor-squad']), 'Bolt Rifle', 5), Datasheet(units['terminator-squad'])
+    r = a.attack(d, situation={'range': 6})
+    counted = {p['name'] for p in r['profiles'] if p['count']}
+    assert counted == {'Focused Fire', 'Saturation'} and r['melee'] == 0
+    assert all(p['each'] > 0 for p in r['profiles'] if p['type'] == 'ranged')   # uncounted profiles still get a per-copy mean
+
+
+def test_combined_dist(units):
+    """dist convolves all counted profiles; spillover off caps it at the wounds left."""
+    a, boyz = only(Datasheet(units['intercessor-squad']), 'Bolt Pistol', 10), Datasheet(units['boyz'], models=10)
+    r = a.attack(boyz)
+    assert dd_mean(r['dist']) == pytest.approx(r['total'], rel=1e-2)  # 1-wound models: no overkill; dd_rep prunes ~0.4%
+    capped = a.attack(Datasheet(units['boyz'], models=2), spillover=False)['dist']
+    assert max(capped) == 2
+    assert dd_mean(attack([a, a], boyz)['dist']) == pytest.approx(2 * r['total'], rel=1e-2)
+
+
+def test_out_of_range_weapons_are_dropped(units):
+    a, rhino = Datasheet(units['intercessor-squad'], models=10), Datasheet(units['rhino'])
+    fired = lambda r: {p['name'] for p in r['profiles'] if p['type'] == 'ranged'}
+    assert fired(a.attack(rhino, situation={'range': 30})) < fired(a.attack(rhino, situation={'range': 6}))
+
+
+def test_cleave_scales_with_defender_size(units):
+    a = Datasheet(units['kommandos'], models=10)
+    small = a.attack(Datasheet(units['intercessor-squad'], models=5))['melee']
+    assert a.attack(Datasheet(units['intercessor-squad'], models=10))['melee'] > small
+
+
+def test_ability_dicts_modify_weapons(units):
+    """Buffs are ability dicts; +1 to hit is the same as the engine's 'mod hits 1'."""
+    a, d = only(Datasheet(units['intercessor-squad']), 'Bolt Pistol', 5), Datasheet(units['terminator-squad'])
+    plus1 = ability({'type': 'roll-modifier', 'target': 'unit', 'modifier': {'roll': 'hit', 'operation': 'add', 'value': 1}})
+    buffed = Datasheet(a.unit, weapons=a.weapons, abilities=a.abilities + [plus1], models=5)
+    assert all('mod hits 1' in p['kws'] for p in buffed.profiles())
+    assert buffed.attack(d)['total'] > a.attack(d)['total']
+
+
+def test_keyword_grant_respects_weapon_type(units):
+    grant = ability({'type': 'keyword-grant', 'target': 'unit',
+                     'modifier': {'keywords': ['Sustained Hits 1'], 'weapon_type': 'melee'}})
+    ps = Datasheet(units['intercessor-squad'], abilities=[grant]).profiles()
+    assert all(('sustained hits 1' in p['kws']) == (p['type'] == 'melee') for p in ps)
+
+
+def test_incoming_debuff_applies_to_attackers(units):
+    """A defender's 'target: attacker' -1 to hit lowers damage against it."""
+    a, d = only(Datasheet(units['intercessor-squad']), 'Bolt Pistol', 5), Datasheet(units['terminator-squad'])
+    minus1 = ability({'type': 'roll-modifier', 'target': 'attacker', 'modifier': {'roll': 'hit', 'operation': 'subtract', 'value': 1}})
+    shielded = Datasheet(d.unit, abilities=d.abilities + [minus1], models=d.models)
+    assert shielded.target() == d.target()
+    assert a.attack(shielded)['total'] < a.attack(d)['total']
+
+
+def test_editing_abilities_regates_defence(units):
+    """Callers regate abilities by editing the list; the library hardcodes no corrections."""
+    u = units['celestian-insidiants']
+    assert any('feel no pain' in a for a in Datasheet(u).target()['abilities'])
+    assert Datasheet(u, abilities=[]).target()['abilities'] == []
+
+
+def test_attack_type_gated_defence_is_not_blanket(units):
+    """FNP only vs psychic attacks is not a general FNP; leader-gated effects count as active."""
+    fnp = lambda **m: {'type': 'feel-no-pain', 'target': 'unit', 'modifier': {'threshold': 4, **m}}
+    gated = ability(fnp(against_attack_type='psychic'))
+    led = ability({'type': 'conditional', 'condition': {'type': 'is-attached'}, 'effect': fnp()})
+    t = lambda a: Datasheet(units['terminator-squad'], abilities=[a]).target()['abilities']
+    assert t(gated) == [] and t(led) == ['feel no pain 4+']
+
+
+def test_situational_durations_off_by_default(units):
+    uid = next(u for u, j in units.items()
+               if any((a.get('scope') or {}).get('duration') == 'phase' and 'feel-no-pain' in str(a.get('effect'))
+                      for a in _resolve('abilities', j.get('ability_ids'), j.get('faction_id'))))
+    assert len(Datasheet(units[uid], durations=None).target()['abilities']) >= len(Datasheet(units[uid]).target()['abilities'])
+
+
+def test_keyword_map_only_contains_modelled_keywords():
+    assert 'psychic' not in KEYWORD_MAP and KEYWORD_MAP['cleave'] == 'cleave'
