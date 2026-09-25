@@ -122,6 +122,7 @@ def test_cover_exemptions():
     assert hit(['ignores cover'], cover=True) == hit()
 
 
-def test_cover_and_stealth_capped_at_minus_one():
+def test_stealth_is_always_in_cover():  # 11th ed: no separate -1, so no stacking, and ignores cover negates it
     assert hit(abilities=['stealth']) == hit(cover=True) == hit(abilities=['stealth'], cover=True)
+    assert hit(['ignores cover'], abilities=['stealth']) == hit(wep=MELEE, abilities=['stealth']) == hit()
     assert hit(['mod hits 1'], cover=True) == hit()

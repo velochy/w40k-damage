@@ -20,7 +20,7 @@ situation = { 'cover':True, 'range': 10, 'overwatch': False, 'indirect': False }
 dam_dist(wep,target,situation)
 ```
 
-Uses 11th ed cover (-1 to hit for ranged attacks, not +1 save). Handles all 10th ed weapon keywords, plus 11th ed 'cleave X' (blast for melee: +X attacks per 5 target models), as well as unit keywords: 'stealth', 'feel no pain x+', 'damage reduction x', 'halve damage'
+Uses 11th ed cover (-1 to hit for ranged attacks, not +1 save; 'stealth' = always in cover). Handles all 10th ed weapon keywords, plus 11th ed 'cleave X' (blast for melee: +X attacks per 5 target models), as well as unit keywords: 'stealth', 'feel no pain x+', 'damage reduction x', 'halve damage'
 Also introduces extra weapon keywords: 'reroll hits', 'reroll 1s to hit, 'hit crit x+', 'reroll wounds', 'reroll 1s to wound', 'wound crit x+'
 
 ## Datasheets

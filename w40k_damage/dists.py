@@ -185,10 +185,10 @@ def get_hit_probs(wep,target,situation={}):
 
         hit_t = wep['bsws']
 
-        # Stealth and (11th ed) cover are -1 to hit vs ranged, within the usual +-1 cap
+        # 11th ed cover is -1 to hit vs ranged; stealth means always in cover
         ih = agg_mod_kw('mod hits',wep['kws'])
-        if wep['type']=='ranged':
-            ih -= ('stealth' in target['abilities']) + (bool(situation.get('cover')) and 'ignores cover' not in wep['kws'])
+        if wep['type']=='ranged' and (situation.get('cover') or 'stealth' in target['abilities']) and 'ignores cover' not in wep['kws']:
+            ih -= 1
         
         hit_t -= max(-1,min(1,ih))
 
